@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.next/
+target/
+*.wasm.sha256
+.env
+.env.local

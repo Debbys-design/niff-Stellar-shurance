@@ -1,0 +1,24 @@
+{
+  "name": "niffyinsure-backend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "start": "node dist/index.js",
+    "build": "tsc",
+    "lint": "eslint src --ext .ts",
+    "test": "jest --passWithNoTests"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "@types/express": "^5",
+    "@types/node": "^22",
+    "@typescript-eslint/eslint-plugin": "^8",
+    "@typescript-eslint/parser": "^8",
+    "eslint": "^9",
+    "jest": "^29",
+    "ts-jest": "^29",
+    "typescript": "^5"
+  }
+}

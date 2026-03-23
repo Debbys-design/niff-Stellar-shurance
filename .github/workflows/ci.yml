@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "feat/**", "fix/**"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ── Smart contract ────────────────────────────────────────────────────────
+  contract:
+    name: Contract (Rust / Soroban)
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: "-D warnings"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --target wasm32-unknown-unknown --release -- -D warnings
+      - run: cargo test
+      - run: cargo build --target wasm32-unknown-unknown --release
+
+      - name: Record wasm SHA-256
+        run: sha256sum target/wasm32-unknown-unknown/release/niffyinsure.wasm | tee niffyinsure.wasm.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: niffyinsure-wasm-${{ github.sha }}
+          path: |
+            target/wasm32-unknown-unknown/release/niffyinsure.wasm
+            niffyinsure.wasm.sha256
+          retention-days: 30
+
+  # ── Backend ───────────────────────────────────────────────────────────────
+  backend:
+    name: Backend (Node / TypeScript)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
+      - run: npm test
+
+  # ── Frontend ──────────────────────────────────────────────────────────────
+  frontend:
+    name: Frontend (Next.js / TypeScript)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
+      - run: npm test

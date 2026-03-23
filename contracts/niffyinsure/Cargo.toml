@@ -1,0 +1,16 @@
+[package]
+name = "niffyinsure"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.81"          # MSRV – soroban-sdk 22+ requires ≥ 1.81
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+soroban-sdk = { version = "=23.5.3", features = [] }
+
+[dev-dependencies]
+soroban-sdk = { version = "=23.5.3", features = ["testutils"] }
+
