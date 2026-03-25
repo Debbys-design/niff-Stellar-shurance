@@ -56,11 +56,11 @@ export function startClaimEventsWorker(
     }
   );
 
-  worker.on("completed", (job) => {
+  worker.on("completed", (job: Job<ClaimEventJobData>) => {
     console.info(`[claim-events worker] job ${job.id} completed`);
   });
 
-  worker.on("failed", (job, err: Error) => {
+  worker.on("failed", (job: Job<ClaimEventJobData> | undefined, err: Error) => {
     console.error(
       `[claim-events worker] job ${job?.id} failed (attempt ${job?.attemptsMade}):`,
       err.message

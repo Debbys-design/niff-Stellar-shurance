@@ -8,8 +8,8 @@ use crate::types::{
 pub enum Error {
     ZeroCoverage,
     ZeroPremium,
-    InvalidLedgerWindow, // end_ledger <= start_ledger
-    PolicyExpired,       // current_ledger >= end_ledger
+    InvalidLedgerWindow,
+    PolicyExpired,
     PolicyInactive,
     ClaimAmountZero,
     ClaimExceedsCoverage,
@@ -18,7 +18,6 @@ pub enum Error {
     ImageUrlTooLong,
     ReasonTooLong,
     ClaimAlreadyTerminal,
-    DuplicateVote,
 }
 
 // ── Policy validators ─────────────────────────────────────────────────────────

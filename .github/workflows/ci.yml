@@ -65,6 +65,7 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 5
+          --health-start-period 5s
 
     env:
       REDIS_HOST: 127.0.0.1
