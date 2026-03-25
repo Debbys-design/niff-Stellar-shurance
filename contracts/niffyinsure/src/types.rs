@@ -86,6 +86,20 @@ pub enum VoteOption {
     Reject,
 }
 
+/// Compact termination reason for indexers (no free-text PII on-chain).
+#[contracttype]
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum TerminationReason {
+    /// Policy is active or ended naturally without an early-termination record.
+    None,
+    VoluntaryCancellation,
+    LapsedNonPayment,
+    UnderwritingVoid,
+    FraudOrMisrepresentation,
+    RegulatoryAction,
+    AdminOverride,
+}
+
 // ── Core structs ─────────────────────────────────────────────────────────────
 
 /// On-chain policy record.
@@ -101,6 +115,12 @@ pub enum VoteOption {
 /// | is_active      | on-chain      | false after termination or expiry |
 /// | start_ledger   | on-chain      | ledger sequence at activation |
 /// | end_ledger     | on-chain      | ledger sequence at expiry; must be > start_ledger |
+/// | terminated_at_ledger | on-chain | set on early termination; 0 if not early-terminated |
+/// | termination_reason   | on-chain | enum code only; allegation text stays off-chain |
+/// | terminated_by_admin  | on-chain | true if admin entrypoint performed termination |
+///
+/// **Audit trail:** policy records remain readable after termination; `is_active` becomes false
+/// but the ledger entry is not erased so indexers can explain outcomes historically.
 #[contracttype]
 #[derive(Clone)]
 pub struct Policy {
@@ -119,6 +139,10 @@ pub struct Policy {
     pub start_ledger: u32,
     /// Ledger sequence when the policy expires; end_ledger > start_ledger.
     pub end_ledger: u32,
+    /// Ledger of early termination; 0 until `terminate_policy` / `admin_terminate_policy`.
+    pub terminated_at_ledger: u32,
+    pub termination_reason: TerminationReason,
+    pub terminated_by_admin: bool,
 }
 
 /// On-chain claim record.
@@ -149,4 +173,25 @@ pub struct Claim {
     pub status: ClaimStatus,
     pub approve_votes: u32,
     pub reject_votes: u32,
+}
+
+/// Premium quote line item for UX display.
+#[contracttype]
+#[derive(Clone)]
+pub struct PremiumQuoteLineItem {
+    pub component: String,
+    pub factor: i128,
+    pub amount: i128,
+}
+
+/// Structured quote response returned by `generate_premium`.
+///
+/// Field names and ordering are kept stable for SDK bindings consumed by
+/// backend simulation services.
+#[contracttype]
+#[derive(Clone)]
+pub struct PremiumQuote {
+    pub total_premium: i128,
+    pub line_items: Option<Vec<PremiumQuoteLineItem>>,
+    pub valid_until_ledger: u32,
 }
