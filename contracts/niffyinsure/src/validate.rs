@@ -105,7 +105,7 @@ pub fn check_reason(reason: &String) -> Result<(), Error> {
 }
 
 pub fn check_claim_open(claim: &Claim) -> Result<(), Error> {
-    if claim.status != crate::types::ClaimStatus::Pending {
+    if claim.status != crate::types::ClaimStatus::Processing {
         return Err(Error::ClaimAlreadyTerminal);
     }
     Ok(())
