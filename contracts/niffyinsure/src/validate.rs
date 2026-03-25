@@ -41,6 +41,9 @@ pub enum Error {
     InsufficientTreasury = 30,
     AlreadyPaid = 31,
     ClaimNotApproved = 32,
+    DuplicateOpenClaim = 33,
+    ExcessiveEvidenceBytes = 34,
+    PolicyNotFound = 35,
 }
 
 pub fn check_policy(policy: &Policy) -> Result<(), Error> {
@@ -102,7 +105,7 @@ pub fn check_reason(reason: &String) -> Result<(), Error> {
 }
 
 pub fn check_claim_open(claim: &Claim) -> Result<(), Error> {
-    if claim.status != crate::types::ClaimStatus::Pending {
+    if claim.status != crate::types::ClaimStatus::Processing {
         return Err(Error::ClaimAlreadyTerminal);
     }
     Ok(())
