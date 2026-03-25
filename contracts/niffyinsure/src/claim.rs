@@ -117,8 +117,13 @@ pub fn vote_on_claim(
     }
 
     env.events().publish(
-        (symbol_short!("vote_log"), claim_id),
-        (voter.clone(), vote.clone()),
+(symbol_short!("c_paid"), claim.claim_id),
+        ClaimProcessed {
+            claim_id: claim.claim_id,
+            recipient: claim.claimant.clone(),
+            amount: claim.amount,
+            asset: claim.asset.clone(),
+        },
     );
 
     // Auto-finalize on majority.

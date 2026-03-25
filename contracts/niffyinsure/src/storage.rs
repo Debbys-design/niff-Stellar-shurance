@@ -1,6 +1,6 @@
 use soroban_sdk::{contracttype, Address, Env, Vec};
 
-use crate::types::{Claim, MultiplierTable, Policy, VoteOption};
+use crate::types::{Claim, Policy, VoteOption};
 
 pub const PERSISTENT_TTL_THRESHOLD: u32 = 100_000;
 pub const PERSISTENT_TTL_EXTEND_TO: u32 = 6_000_000;
@@ -23,6 +23,9 @@ pub enum DataKey {
     Policy(Address, u32),
     PolicyCounter(Address),
     Claim(u64),
+    /// Temp key for open claim check (policy_holder, policy_id) -> bool
+    OpenClaim(Address, u32),
+    /// (claim_id, voter_address) → VoteOption; immutable after first write
     Vote(u64, Address),
     /// Snapshot of eligible voters captured at claim-filing time.
     ClaimVoters(u64),
@@ -31,6 +34,17 @@ pub enum DataKey {
 }
 
 // ── Instance bump ─────────────────────────────────────────────────────────────
+
+pub fn has_open_claim(env: &Env, holder: &Address, policy_id: u32) -> bool {
+    env.storage().instance().get(&DataKey::OpenClaim(holder.clone(), policy_id)).unwrap_or(false)
+}
+
+pub fn set_open_claim(env: &Env, holder: &Address, policy_id: u32, open: bool) {
+    env.storage().instance().set(&DataKey::OpenClaim(holder.clone(), policy_id), &open);
+}
+
+/// Extend instance storage TTL so admin/token/counters are never evicted.
+/// Call at the start of every mutating entrypoint.
 pub fn bump_instance(env: &Env) {
     env.storage()
         .instance()
@@ -83,6 +97,12 @@ pub fn get_calc_address(env: &Env) -> Option<Address> {
 }
 
 // ── Multiplier table ──────────────────────────────────────────────────────────
+pub fn set_multiplier_table(env: &Env, table: &MultiplierTable) {
+    env.storage().instance().set(&DataKey::PremiumTable, table);
+}
+
+use crate::types::MultiplierTable;
+
 pub fn set_multiplier_table(env: &Env, table: &MultiplierTable) {
     env.storage().instance().set(&DataKey::PremiumTable, table);
 }
@@ -214,14 +234,192 @@ pub fn has_policy(env: &Env, holder: &Address, policy_id: u32) -> bool {
         .has(&DataKey::Policy(holder.clone(), policy_id))
 }
 
-/// Store a policy.  Key is derived from `policy.holder` and `policy.policy_id`.
-pub fn set_policy(env: &Env, policy: &Policy) {
-    let key = DataKey::Policy(policy.holder.clone(), policy.policy_id);
-    env.storage().persistent().set(&key, policy);
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ORACLE / PARAMETRIC TRIGGER STORAGE HELPERS (experimental only)
+//
+// ⚠️  LEGAL / COMPLIANCE REVIEW GATE: These functions are non-operational
+// stubs.  They panic in default builds and must NOT be called until:
+//   • Regulatory classification is complete
+//   • Legal review approves automatic trigger-to-claim flow
+//   • Game-theoretic safeguards are implemented
+//   • Cryptographic signature verification is designed and audited
+//
+// PRODUCTION SAFETY: Default builds (without `experimental` feature)
+// will panic if any of these functions are called, ensuring oracle
+// triggers cannot be processed accidentally.
+// ═════════════════════════════════════════════════════════════════════════════
+
+#[cfg(feature = "experimental")]
+use crate::types::{OracleTrigger, TriggerStatus};
+
+/// Returns whether oracle triggers are globally enabled.
+///
+/// ⚠️  DEFAULT IS FALSE: Oracle triggers must be explicitly enabled by admin
+/// after completing all required reviews (see DESIGN-ORACLE.md).
+#[cfg(feature = "experimental")]
+pub fn is_oracle_enabled(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::OracleEnabled)
+        .unwrap_or(false)
+}
+
+/// Enable or disable oracle triggers globally.
+///
+/// ⚠️  ADMIN ACTION REQUIRED: This should remain false until:
+///   • Cryptographic design review is complete
+///   • Legal/compliance has approved parametric triggers
+///   • Game-theoretic safeguards are implemented
+#[cfg(feature = "experimental")]
+pub fn set_oracle_enabled(env: &Env, enabled: bool) {
+    env.storage().instance().set(&DataKey::OracleEnabled, &enabled);
+}
+
+/// Returns the next trigger_id and increments the counter.
+///
+/// ⚠️  PRODUCTION NOTE: Trigger ID generation must include replay protection.
+/// Current implementation is a placeholder.
+#[cfg(feature = "experimental")]
+pub fn next_trigger_id(env: &Env) -> u64 {
+    let key = DataKey::TriggerCounter;
+    let next: u64 = env
+        .storage()
+        .instance()
+        .get(&key)
+        .unwrap_or(0u64)
+        + 1;
+    env.storage().instance().set(&key, &next);
+    next
+}
+
+/// Store an oracle trigger.
+///
+/// ⚠️  SECURITY: Signature verification must be performed BEFORE calling
+/// this function.  See validate_oracle_trigger() in validate.rs.
+#[cfg(feature = "experimental")]
+pub fn set_oracle_trigger(env: &Env, trigger_id: u64, trigger: &OracleTrigger) {
     env.storage()
         .persistent()
-        .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
+        .set(&DataKey::OracleTrigger(trigger_id), trigger);
 }
+
+/// Retrieve an oracle trigger by ID.
+#[cfg(feature = "experimental")]
+pub fn get_oracle_trigger(env: &Env, trigger_id: u64) -> Option<OracleTrigger> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::OracleTrigger(trigger_id))
+}
+
+/// Update trigger status.
+#[cfg(feature = "experimental")]
+pub fn set_trigger_status(env: &Env, trigger_id: u64, status: TriggerStatus) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::TriggerStatus(trigger_id), &status);
+}
+
+/// Get trigger status.
+#[cfg(feature = "experimental")]
+pub fn get_trigger_status(env: &Env, trigger_id: u64) -> Option<TriggerStatus> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::TriggerStatus(trigger_id))
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// STUB IMPLEMENTATIONS FOR DEFAULT (NON-EXPERIMENTAL) BUILDS
+//
+// These functions ensure that default builds CANNOT process oracle triggers.
+// If called in a non-experimental build, they will panic at runtime.
+// This is intentional: it creates a hard failure mode that prevents accidental
+// oracle trigger processing in production.
+// ═════════════════════════════════════════════════════════════════════════════
+
+#[cfg(not(feature = "experimental"))]
+use crate::types::{OracleTrigger, TriggerStatus};
+
+/// Stub: Panics in default builds to prevent oracle trigger processing.
+///
+/// ⚠️  DO NOT REMOVE THIS FUNCTION.  It ensures production safety by
+/// creating a compile-time guarantee that oracle triggers cannot be
+/// processed without the experimental feature flag.
+#[cfg(not(feature = "experimental"))]
+#[allow(dead_code)]
+pub fn is_oracle_enabled(_env: &Env) -> bool {
+    panic!(
+        "ORACLE_TRIGGERS_DISABLED: Oracle trigger processing is not enabled in this build. \
+         Default production builds cannot process oracle triggers. \
+         See DESIGN-ORACLE.md for activation requirements."
+    )
+}
+
+/// Stub: Panics in default builds.
+#[cfg(not(feature = "experimental"))]
+#[allow(dead_code)]
+pub fn set_oracle_enabled(_env: &Env, _enabled: bool) {
+    panic!(
+        "ORACLE_TRIGGERS_DISABLED: Oracle trigger processing is not enabled in this build. \
+         Default production builds cannot process oracle triggers. \
+         See DESIGN-ORACLE.md for activation requirements."
+    )
+}
+
+/// Stub: Panics in default builds.
+#[cfg(not(feature = "experimental"))]
+#[allow(dead_code)]
+pub fn next_trigger_id(_env: &Env) -> u64 {
+    panic!(
+        "ORACLE_TRIGGERS_DISABLED: Oracle trigger ID generation is not enabled in this build. \
+         Default production builds cannot process oracle triggers. \
+         See DESIGN-ORACLE.md for activation requirements."
+    )
+}
+
+/// Stub: Panics in default builds.
+#[cfg(not(feature = "experimental"))]
+#[allow(dead_code)]
+pub fn set_oracle_trigger(_env: &Env, _trigger_id: u64, _trigger: &OracleTrigger) {
+    panic!(
+        "ORACLE_TRIGGERS_DISABLED: Oracle trigger storage is not enabled in this build. \
+         Default production builds cannot process oracle triggers. \
+         See DESIGN-ORACLE.md for activation requirements."
+    )
+}
+
+/// Stub: Panics in default builds.
+#[cfg(not(feature = "experimental"))]
+#[allow(dead_code)]
+pub fn get_oracle_trigger(_env: &Env, _trigger_id: u64) -> Option<OracleTrigger> {
+    panic!(
+        "ORACLE_TRIGGERS_DISABLED: Oracle trigger retrieval is not enabled in this build. \
+         Default production builds cannot process oracle triggers. \
+         See DESIGN-ORACLE.md for activation requirements."
+    )
+}
+
+/// Stub: Panics in default builds.
+#[cfg(not(feature = "experimental"))]
+#[allow(dead_code)]
+pub fn set_trigger_status(_env: &Env, _trigger_id: u64, _status: TriggerStatus) {
+    panic!(
+        "ORACLE_TRIGGERS_DISABLED: Oracle trigger status updates are not enabled in this build. \
+         Default production builds cannot process oracle triggers. \
+         See DESIGN-ORACLE.md for activation requirements."
+    )
+}
+
+/// Stub: Panics in default builds.
+#[cfg(not(feature = "experimental"))]
+#[allow(dead_code)]
+pub fn get_trigger_status(_env: &Env, _trigger_id: u64) -> Option<TriggerStatus> {
+    panic!(
+        "ORACLE_TRIGGERS_DISABLED: Oracle trigger status retrieval is not enabled in this build. \
+         Default production builds cannot process oracle triggers. \
+         See DESIGN-ORACLE.md for activation requirements."
+    )
+// ── Pause flag ───────────────────────────────────────────────────────────────
 
 pub fn get_policy(env: &Env, holder: &Address, policy_id: u32) -> Option<Policy> {
     env.storage()
@@ -288,4 +486,5 @@ pub fn get_active_policy_count(env: &Env, holder: &Address) -> u32 {
         .instance()
         .get(&DataKey::ActivePolicyCount(holder.clone()))
         .unwrap_or(0)
+
 }
