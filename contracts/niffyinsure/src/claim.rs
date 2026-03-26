@@ -218,6 +218,11 @@ pub fn file_claim(
         approve_votes: 0,
         reject_votes: 0,
         filed_at: now,
+        appeal_open_deadline_ledger: 0,
+        appeals_count: 0,
+        appeal_deadline_ledger: 0,
+        appeal_approve_votes: 0,
+        appeal_reject_votes: 0,
     };
 
     storage::set_claim(env, &claim);
@@ -283,10 +288,16 @@ pub fn vote_on_claim(
     // Auto-finalize on majority.
     let total = snapshot.len();
     let majority = total / 2 + 1;
+    let newly_rejected;
     if claim.approve_votes >= majority {
         claim.status = ClaimStatus::Approved;
+        newly_rejected = false;
     } else if claim.reject_votes >= majority {
         claim.status = ClaimStatus::Rejected;
+        claim.appeal_open_deadline_ledger = now.saturating_add(ledger::APPEAL_OPEN_WINDOW_LEDGERS);
+        newly_rejected = true;
+    } else {
+        newly_rejected = false;
     }
 
     let newly_rejected = claim.status == ClaimStatus::Rejected;
@@ -329,12 +340,16 @@ pub fn finalize_claim(env: &Env, claim_id: u64) -> Result<ClaimStatus, Error> {
         return Err(Error::VotingWindowStillOpen);
     }
 
-    claim.status = if claim.approve_votes > claim.reject_votes {
-        ClaimStatus::Approved
+    let newly_rejected;
+    if claim.approve_votes > claim.reject_votes {
+        claim.status = ClaimStatus::Approved;
+        newly_rejected = false;
     } else {
         // Tie or reject plurality → Rejected (insurer wins tie).
-        ClaimStatus::Rejected
-    };
+        claim.status = ClaimStatus::Rejected;
+        claim.appeal_open_deadline_ledger = now.saturating_add(ledger::APPEAL_OPEN_WINDOW_LEDGERS);
+        newly_rejected = true;
+    }
 
     let newly_rejected = claim.status == ClaimStatus::Rejected;
 
@@ -504,6 +519,8 @@ fn payout(env: &Env, claim: &Claim) -> Result<(), Error> {
 
     Ok(())
 }
+
+// ── Public read helpers ───────────────────────────────────────────────────────
 
 pub fn get_claim(env: &Env, claim_id: u64) -> Result<Claim, Error> {
     storage::get_claim(env, claim_id).ok_or(Error::ClaimNotFound)

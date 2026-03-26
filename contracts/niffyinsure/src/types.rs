@@ -35,10 +35,27 @@ pub const STRIKE_DEACTIVATION_THRESHOLD: u32 = 3;
 // Conversion: 1 ledger ≈ 5 s on Stellar Mainnet (Protocol 20+).
 // See: https://developers.stellar.org/docs/learn/fundamentals/stellar-consensus-protocol
 pub use crate::ledger::{
-    LEDGERS_PER_DAY, LEDGERS_PER_HOUR, LEDGERS_PER_MIN, LEDGERS_PER_WEEK, POLICY_DURATION_LEDGERS,
+    APPEAL_OPEN_WINDOW_LEDGERS, APPEAL_VOTE_WINDOW_LEDGERS, LEDGERS_PER_DAY, LEDGERS_PER_HOUR,
+    LEDGERS_PER_MIN, LEDGERS_PER_WEEK, MAX_APPEALS_PER_CLAIM, POLICY_DURATION_LEDGERS,
     QUOTE_TTL_LEDGERS, RATE_LIMIT_WINDOW_LEDGERS, RENEWAL_WINDOW_LEDGERS, SECS_PER_LEDGER,
     VOTE_WINDOW_LEDGERS,
 };
+
+// ── Strike / rejection constants ──────────────────────────────────────────────
+
+/// Number of rejected claims that automatically deactivates a policy.
+///
+/// This is a **compile-time constant**, not a runtime admin parameter.  Admin
+/// cannot flip it post-deployment, which prevents governance gaming where a
+/// large voter bloc rejects claims to deactivate rival policies.
+///
+/// **Legal review:** Before changing this value, consult legal counsel on
+/// whether automatic policy cancellation triggers regulatory requirements
+/// (e.g., notice periods, appeal rights).
+///
+/// **Appeal interaction:** Deactivation triggered by reaching this threshold
+/// can be reversed by a successful appeal that decrements strikes back below it.
+pub const STRIKE_DEACTIVATION_THRESHOLD: u32 = 3;
 
 // ── Enums ─────────────────────────────────────────────────────────────────────
 
@@ -76,10 +93,19 @@ pub enum CoverageType {
 
 /// Claim lifecycle state machine.
 ///
-/// Transitions:
-///   Processing → Approved (majority approve vote or deadline plurality)
-///   Processing → Rejected (majority reject vote or deadline plurality/tie)
-///   Approved   → Paid     (admin calls process_claim)
+/// Base-flow transitions:
+///   Processing  → Approved      (majority approve vote or deadline plurality)
+///   Processing  → Rejected      (majority reject vote or deadline plurality/tie)
+///   Approved    → Paid          (admin calls process_claim)
+///
+/// Appeal-flow transitions (requires Rejected status + open appeal window):
+///   Rejected    → UnderAppeal   (claimant calls open_appeal within window)
+///   UnderAppeal → AppealApproved (majority approve appeal vote or deadline)
+///   UnderAppeal → AppealRejected (majority reject appeal vote or deadline)
+///   AppealApproved → Paid       (admin calls process_claim — same as Approved)
+///
+/// Terminal states (no further transitions): Paid, Rejected (after appeal window
+/// closes), AppealApproved (→ Paid only), AppealRejected.
 #[contracttype]
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum ClaimStatus {
@@ -88,13 +114,23 @@ pub enum ClaimStatus {
     Approved,
     Paid,
     Rejected,
+    /// Claimant has opened an appeal; fresh vote round in progress.
+    UnderAppeal,
+    /// Appeal vote resolved in claimant's favour; awaits admin payout.
+    AppealApproved,
+    /// Appeal vote rejected; claim is permanently closed.
+    AppealRejected,
 }
 
 impl ClaimStatus {
     pub fn is_terminal(&self) -> bool {
         matches!(
             self,
-            ClaimStatus::Approved | ClaimStatus::Paid | ClaimStatus::Rejected
+            ClaimStatus::Approved
+                | ClaimStatus::Paid
+                | ClaimStatus::Rejected
+                | ClaimStatus::AppealApproved
+                | ClaimStatus::AppealRejected
         )
     }
 }
@@ -234,6 +270,18 @@ pub struct Claim {
     pub reject_votes: u32,
     /// Ledger sequence at which this claim was filed (voting window anchor).
     pub filed_at: u32,
+    // ── Appeal fields ────────────────────────────────────────────────────────
+    /// Ledger by which `open_appeal` must be called (0 if never rejected).
+    /// Set to `rejected_at + APPEAL_OPEN_WINDOW_LEDGERS` when status → Rejected.
+    pub appeal_open_deadline_ledger: u32,
+    /// How many appeals have been opened for this claim (cap = MAX_APPEALS_PER_CLAIM).
+    pub appeals_count: u32,
+    /// Voting deadline for the current appeal round (0 if no appeal open).
+    pub appeal_deadline_ledger: u32,
+    /// Approve votes cast in the current appeal round.
+    pub appeal_approve_votes: u32,
+    /// Reject votes cast in the current appeal round.
+    pub appeal_reject_votes: u32,
 }
 
 #[contracttype]
