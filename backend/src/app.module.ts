@@ -16,6 +16,7 @@ import { QuoteModule } from './quote/quote.module';
 import { PolicyModule } from './policy/policy.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { TxModule } from './tx/tx.module';
+import { MaintenanceModule } from './maintenance/maintenance.module';
 
 @Module({
   imports: [
@@ -42,6 +43,7 @@ import { TxModule } from './tx/tx.module';
     PolicyModule,
     NotificationsModule,
     TxModule,
+    MaintenanceModule,
   ],
 })
 export class AppModule {}
