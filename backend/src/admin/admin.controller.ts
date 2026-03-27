@@ -12,6 +12,7 @@ import {
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { IsEnum, IsOptional, IsString } from 'class-validator';
 import { Request } from 'express';
@@ -48,6 +49,7 @@ export class AdminController {
     private readonly auditService: AuditService,
     private readonly privacyService: PrivacyService,
     private readonly rateLimitService: RateLimitService,
+    private readonly configService: ConfigService,
   ) {}
 
   /**
@@ -64,14 +66,16 @@ export class AdminController {
   @ApiOperation({ summary: 'Enqueue a ledger reindex job from a given ledger' })
   async reindex(@Body() dto: ReindexDto, @Req() req: AdminRequest) {
     const actor = req.user?.walletAddress ?? 'unknown';
-    const jobId = await this.adminService.enqueueReindex(dto.fromLedger);
+    const network =
+      dto.network ?? this.configService.get<string>('STELLAR_NETWORK', 'testnet');
+    const jobId = await this.adminService.enqueueReindex(dto.fromLedger, network);
     await this.auditService.write({
       actor,
       action: 'reindex',
-      payload: { fromLedger: dto.fromLedger, jobId },
+      payload: { fromLedger: dto.fromLedger, network, jobId },
       ipAddress: req.ip,
     });
-    return { jobId, fromLedger: dto.fromLedger, status: 'queued' };
+    return { jobId, fromLedger: dto.fromLedger, network, status: 'queued' };
   }
 
   /**

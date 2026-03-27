@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
 import { AdminController } from './admin.controller';
 import { AdminService } from './admin.service';
 import { AuditService } from './audit.service';
@@ -8,7 +9,7 @@ import { MaintenanceModule } from '../maintenance/maintenance.module';
 import { RateLimitModule } from '../rate-limit/rate-limit.module';
 
 @Module({
-  imports: [PrismaModule, AuthModule, MaintenanceModule, RateLimitModule],
+  imports: [ConfigModule, PrismaModule, AuthModule, MaintenanceModule, RateLimitModule],
   controllers: [AdminController],
   providers: [AdminService, AuditService],
   exports: [AuditService],
