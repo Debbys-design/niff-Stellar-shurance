@@ -136,9 +136,11 @@ fn status_history_finalize_reject_sequence() {
     let holder = Address::generate(&env);
     let voter1 = Address::generate(&env);
     let voter2 = Address::generate(&env);
+    let voter3 = Address::generate(&env);
     fund_holder(&env, &client, &token, &holder);
     seed_voter(&client, &voter1);
     seed_voter(&client, &voter2);
+    seed_voter(&client, &voter3);
 
     let policy = client.initiate_policy(
         &holder,
@@ -156,9 +158,10 @@ fn status_history_finalize_reject_sequence() {
     let urls = vec![&env];
     let claim_id = client.file_claim(&holder, &policy.policy_id, &50_000, &details, &urls);
 
-    // Split vote — no majority until deadline
+    // Three voters in snapshot → participation quorum needs ≥2 casts. Single vote
+    // leaves the claim in `Processing` until `finalize_claim` applies the
+    // post-deadline no-quorum rejection path.
     client.vote_on_claim(&voter1, &claim_id, &VoteOption::Approve);
-    client.vote_on_claim(&voter2, &claim_id, &VoteOption::Reject);
 
     env.ledger().with_mut(|l| {
         l.sequence_number = INITIAL_LEDGER + VOTE_WINDOW_LEDGERS + 1;

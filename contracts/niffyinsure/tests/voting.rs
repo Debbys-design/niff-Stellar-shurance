@@ -162,19 +162,19 @@ fn finalize_after_deadline_plurality_approve() {
 
 #[test]
 fn finalize_tie_resolves_to_rejected() {
-    // Tie → Rejected (insurer wins tie)
+    // With participation quorum, a 1–1 tie is resolved as soon as the second ballot
+    // is cast (same outcome as post-deadline finalize plurality tie).
     let (env, client, _, _) = setup();
     let v1 = Address::generate(&env);
     let v2 = Address::generate(&env);
+    let v3 = Address::generate(&env);
     seed(&client, &v1, 1_000_000, 500_000);
     seed(&client, &v2, 1_000_000, 500_000);
+    seed(&client, &v3, 1_000_000, 500_000);
     let cid = file(&client, &v1, 100_000, &env);
     client.vote_on_claim(&v1, &cid, &VoteOption::Approve);
     client.vote_on_claim(&v2, &cid, &VoteOption::Reject);
-    env.ledger()
-        .with_mut(|l| l.sequence_number += VOTE_WINDOW_LEDGERS + 1);
-    // Should not panic; tie → Rejected
-    client.finalize_claim(&cid);
+    assert_eq!(client.get_claim(&cid).status, ClaimStatus::Rejected);
 }
 
 #[test]

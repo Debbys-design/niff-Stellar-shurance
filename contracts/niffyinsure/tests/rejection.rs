@@ -257,17 +257,16 @@ fn rejection_clears_open_claim_flag() {
 /// Deadline finalization with plurality-reject triggers rejection side-effects.
 #[test]
 fn deadline_reject_increments_strike_count() {
-    let (env, client, v1, v2, _v3) = three_voter_setup();
+    let (env, client, v1, _v2, _v3) = three_voter_setup();
     let cid = file(&client, &v1, 100_000, &env);
-    // 1 approve, 1 reject → no majority; deadline decides
+    // Three voters in snapshot → need ≥2 casts for participation quorum; one approve
+    // leaves the claim in `Processing` until post-deadline finalize (no-quorum reject).
     client.vote_on_claim(&v1, &cid, &VoteOption::Approve);
-    client.vote_on_claim(&v2, &cid, &VoteOption::Reject);
 
     let claim = client.get_claim(&cid);
     env.ledger()
         .with_mut(|l| l.sequence_number = claim.voting_deadline_ledger + 1);
 
-    // Tie resolves to Rejected (insurer wins tie)
     client.finalize_claim(&cid);
     assert_eq!(client.get_claim(&cid).status, ClaimStatus::Rejected);
 
@@ -284,18 +283,16 @@ fn tie_resolves_to_rejected_and_increments_strike() {
     let (env, client, _, _) = setup();
     let v1 = Address::generate(&env);
     let v2 = Address::generate(&env);
+    let v3 = Address::generate(&env);
     seed(&client, &v1, 1_000_000, 500_000);
     seed(&client, &v2, 1_000_000, 500_000);
+    seed(&client, &v3, 1_000_000, 500_000);
 
     let cid = file(&client, &v1, 100_000, &env);
     client.vote_on_claim(&v1, &cid, &VoteOption::Approve);
     client.vote_on_claim(&v2, &cid, &VoteOption::Reject);
 
-    let claim = client.get_claim(&cid);
-    env.ledger()
-        .with_mut(|l| l.sequence_number = claim.voting_deadline_ledger + 1);
-    client.finalize_claim(&cid);
-
+    // Three voters ⇒ required cast ≥2 before quorum; 1–1 tie ⇒ Rejected after the second ballot.
     assert_eq!(client.get_claim(&cid).status, ClaimStatus::Rejected);
     let policy = client.get_policy(&v1, &1u32).expect("policy must exist");
     assert_eq!(policy.strike_count, 1);

@@ -57,6 +57,19 @@ pub use crate::ledger::{
 /// can be reversed by a successful appeal that decrements strikes back below it.
 pub const STRIKE_DEACTIVATION_THRESHOLD: u32 = 3;
 
+// ── Claim voting quorum (basis points) ────────────────────────────────────────
+
+/// Default participation quorum when instance `QuorumBps` is unset, and fallback for
+/// claims filed before per-claim quorum snapshots existed.
+pub const DEFAULT_QUORUM_BPS: u32 = 5000;
+
+/// Admin `quorum_bps` must satisfy `QUORUM_BPS_MIN <= quorum_bps <= QUORUM_BPS_MAX`.
+pub const QUORUM_BPS_MIN: u32 = 1;
+pub const QUORUM_BPS_MAX: u32 = 10_000;
+
+/// One full turn-out / 100% weight in bps (used in the quorum formula below).
+pub const QUORUM_BPS_DENOMINATOR: u32 = 10_000;
+
 // ── Enums ─────────────────────────────────────────────────────────────────────
 
 #[contracttype]
@@ -94,8 +107,9 @@ pub enum CoverageTier {
 /// Claim lifecycle state machine.
 ///
 /// Base-flow transitions:
-///   Processing  → Approved      (majority approve vote or deadline plurality)
-///   Processing  → Rejected      (majority reject vote or deadline plurality/tie)
+///   Processing  → Approved      (participation quorum met + more approve than reject votes cast)
+///   Processing  → Rejected      (participation quorum met + reject wins or tie; or deadline with no quorum)
+///   Processing  → Withdrawn     (claimant calls `withdraw_claim` before any vote is cast)
 ///   Approved    → Paid          (admin calls process_claim)
 ///
 /// Appeal-flow transitions (requires Rejected status + open appeal window):
@@ -105,7 +119,7 @@ pub enum CoverageTier {
 ///   AppealApproved → Paid       (admin calls process_claim — same as Approved)
 ///
 /// Terminal states (no further transitions): Paid, Rejected (after appeal window
-/// closes), AppealApproved (→ Paid only), AppealRejected.
+/// closes), AppealApproved (→ Paid only), AppealRejected, Withdrawn.
 #[contracttype]
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum ClaimStatus {
@@ -120,6 +134,8 @@ pub enum ClaimStatus {
     AppealApproved,
     /// Appeal vote rejected; claim is permanently closed.
     AppealRejected,
+    /// Claimant withdrew before voting began; record kept for audit; no payout.
+    Withdrawn,
 }
 
 impl ClaimStatus {
@@ -131,6 +147,7 @@ impl ClaimStatus {
                 | ClaimStatus::Rejected
                 | ClaimStatus::AppealApproved
                 | ClaimStatus::AppealRejected
+                | ClaimStatus::Withdrawn
         )
     }
 }

@@ -6,7 +6,7 @@
 //
 // Open claim accounting: `storage::OpenClaimCount(holder, policy_id)` must be
 // incremented when a claim enters `Processing` and decremented when it reaches
-// a terminal status (`Approved` / `Rejected`), so policy termination can block
+// a terminal status (`Approved` / `Rejected` / `Withdrawn`), so policy termination can block
 // or audit in-flight claims. Until `file_claim` ships, admins may use
 // `admin_set_open_claim_count` in tests or break-glass ops only.
 //
@@ -88,6 +88,50 @@ fn push_status_transition(
     }
 }
 
+// ── Participation quorum (see also `types` lifecycle docs) ───────────────────
+//
+// Let `E` = eligible voters (snapshot length at `file_claim`), `C` = cast ballots =
+// `approve_votes + reject_votes`, `Q` = quorum basis points **for this claim**
+// (instance `quorum_bps` copied into persistent `ClaimQuorumBps(claim_id)` at filing).
+// Admin changes to instance `quorum_bps` do **not** alter `Q` for claims already in
+// `Processing`.
+//
+// Required minimum cast votes:
+//   R = ceil(E * Q / 10_000)  →  R = (E * Q + 9_999) / 10_000  (u32; E = 0 ⇒ R = 0)
+//
+// **Quorum met** iff `C >= R`. If met, outcome is **plurality**: Approved when
+// `approve_votes > reject_votes`, else Rejected (insurer wins ties).
+// If the voting deadline passes with `C < R`, the claim is **Rejected** (no quorum).
+fn required_cast_for_quorum(eligible: u32, quorum_bps: u32) -> u32 {
+    if eligible == 0 {
+        return 0;
+    }
+    let numer = (eligible as u64).saturating_mul(quorum_bps as u64);
+    numer.div_ceil(10_000) as u32
+}
+
+fn participation_quorum_met(cast_votes: u32, eligible: u32, quorum_bps: u32) -> bool {
+    cast_votes >= required_cast_for_quorum(eligible, quorum_bps)
+}
+
+/// If participation quorum is satisfied, returns Some(Approved|Rejected) by plurality.
+fn resolve_plurality_if_quorum_met(
+    approve_votes: u32,
+    reject_votes: u32,
+    cast_votes: u32,
+    eligible: u32,
+    quorum_bps: u32,
+) -> Option<ClaimStatus> {
+    if !participation_quorum_met(cast_votes, eligible, quorum_bps) {
+        return None;
+    }
+    if approve_votes > reject_votes {
+        Some(ClaimStatus::Approved)
+    } else {
+        Some(ClaimStatus::Rejected)
+    }
+}
+
 // ── Events ────────────────────────────────────────────────────────────────────
 
 #[contractevent(topics = ["niffyinsure", "claim_filed"])]
@@ -97,6 +141,19 @@ struct ClaimFiled {
     pub claim_id: u64,
     pub holder: Address,
     pub image_hash: u64,
+}
+
+/// Emitted when the claimant withdraws before any vote is cast.
+///
+/// Topic layout: ["niffyinsure", "claim_withdrawn", claim_id]
+#[contractevent(topics = ["niffyinsure", "claim_withdrawn"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClaimWithdrawn {
+    #[topic]
+    pub claim_id: u64,
+    pub policy_id: u32,
+    pub claimant: Address,
+    pub at_ledger: u32,
 }
 
 /// Emitted as the authoritative rejection signal. Indexers must consume this
@@ -210,8 +267,11 @@ pub fn file_claim(
         return Err(Error::DuplicateOpenClaim);
     }
 
+    // Anchor for restoring per-holder rate limit if claimant later withdraws (see `withdraw_claim`).
+    let rate_limit_anchor_before_filing = storage::get_last_claim_ledger(env, holder);
+
     // Rate-limit check.
-    if let Some(last) = storage::get_last_claim_ledger(env, holder) {
+    if let Some(last) = rate_limit_anchor_before_filing {
         if !ledger::is_rate_limit_elapsed(now, last, ledger::RATE_LIMIT_WINDOW_LEDGERS) {
             return Err(Error::RateLimitExceeded);
         }
@@ -251,7 +311,9 @@ pub fn file_claim(
     storage::set_claim(env, &claim);
     storage::set_open_claim(env, holder, policy_id, true);
     storage::snapshot_claim_voters(env, claim_id);
+    storage::set_claim_quorum_bps(env, claim_id, storage::get_quorum_bps(env));
     storage::set_last_claim_ledger(env, holder, now);
+    storage::set_claim_rate_limit_prev(env, claim_id, rate_limit_anchor_before_filing);
 
     ClaimFiled {
         claim_id,
@@ -261,6 +323,60 @@ pub fn file_claim(
     .publish(env);
 
     Ok(claim_id)
+}
+
+// ── withdraw_claim ────────────────────────────────────────────────────────────
+
+/// Claimant-only: withdraw a claim before any ballot is cast.
+///
+/// Allowed only while `status == Processing` and `approve_votes + reject_votes == 0`.
+/// Sets status to [`ClaimStatus::Withdrawn`], clears the open-claim flag, restores the
+/// holder's claim **rate-limit anchor** to its value before this claim was filed (see
+/// `storage::ClaimRateLimitPrev`), and emits [`ClaimWithdrawn`].
+///
+/// **Rate limit vs open-claim cap:** Withdrawal does **not** consume the per-policy
+/// "one open claim" slot once complete (open flag cleared). The per-holder time spacing
+/// between **successful** `file_claim` calls is reverted to the pre-filing anchor so a
+/// mistaken filing does not force the holder to wait another full window before refiling.
+pub fn withdraw_claim(env: &Env, claimant: &Address, claim_id: u64) -> Result<(), Error> {
+    storage::assert_claims_not_paused(env);
+
+    let mut claim = storage::get_claim(env, claim_id).ok_or(Error::ClaimNotFound)?;
+
+    if claimant != &claim.claimant {
+        return Err(Error::NotEligibleVoter);
+    }
+
+    if claim.status != ClaimStatus::Processing {
+        return Err(Error::ClaimAlreadyTerminal);
+    }
+
+    if claim.approve_votes != 0 || claim.reject_votes != 0 {
+        return Err(Error::ClaimAlreadyTerminal);
+    }
+
+    let now = env.ledger().sequence();
+    claim.status = ClaimStatus::Withdrawn;
+    push_status_transition(&mut claim.status_history, ClaimStatus::Withdrawn, now);
+
+    storage::set_open_claim(env, &claim.claimant, claim.policy_id, false);
+
+    match storage::take_claim_rate_limit_prev(env, claim_id) {
+        Some(ledger) => storage::set_last_claim_ledger(env, &claim.claimant, ledger),
+        None => storage::remove_last_claim_ledger(env, &claim.claimant),
+    }
+
+    storage::set_claim(env, &claim);
+
+    ClaimWithdrawn {
+        claim_id,
+        policy_id: claim.policy_id,
+        claimant: claimant.clone(),
+        at_ledger: now,
+    }
+    .publish(env);
+
+    Ok(())
 }
 
 // ── vote_on_claim ─────────────────────────────────────────────────────────────
@@ -311,14 +427,21 @@ pub fn vote_on_claim(
         VoteOption::Reject => claim.reject_votes += 1,
     }
 
-    // Auto-finalize on majority.
-    let total = snapshot.len();
-    let majority = total / 2 + 1;
-    if claim.approve_votes >= majority {
-        claim.status = ClaimStatus::Approved;
-    } else if claim.reject_votes >= majority {
-        claim.status = ClaimStatus::Rejected;
-        claim.appeal_open_deadline_ledger = now.saturating_add(ledger::APPEAL_OPEN_WINDOW_LEDGERS);
+    let eligible = snapshot.len() as u32;
+    let cast = claim.approve_votes + claim.reject_votes;
+    let quorum_bps = storage::get_claim_quorum_bps(env, claim_id);
+    if let Some(res) = resolve_plurality_if_quorum_met(
+        claim.approve_votes,
+        claim.reject_votes,
+        cast,
+        eligible,
+        quorum_bps,
+    ) {
+        let rejected = res == ClaimStatus::Rejected;
+        claim.status = res;
+        if rejected {
+            claim.appeal_open_deadline_ledger = now.saturating_add(ledger::APPEAL_OPEN_WINDOW_LEDGERS);
+        }
     }
 
     if claim.status != status_before {
@@ -329,6 +452,10 @@ pub fn vote_on_claim(
 
     if claim.status.is_terminal() {
         storage::set_open_claim(env, &claim.claimant, claim.policy_id, false);
+    }
+
+    if status_before == ClaimStatus::Processing && claim.status != ClaimStatus::Processing {
+        storage::remove_claim_rate_limit_prev(env, claim_id);
     }
 
     let status = claim.status.clone();
@@ -349,11 +476,10 @@ pub fn vote_on_claim(
 /// Finalize a claim after the voting deadline has passed.
 ///
 /// Window check: `now > claim.voting_deadline_ledger` (see `ledger::is_claim_past_voting_deadline`).
-/// Plurality wins; tie resolves to Rejected.
-pub fn finalize_claim(env: &Env, claim_id: u64) -> Result<ClaimStatus, Error> {
-    // Check pause: finalization is blocked if claims_paused is true
-    storage::assert_claims_not_paused(env);
-
+/// Uses the **participation quorum** and per-claim `quorum_bps` snapshot (see module helpers).
+/// If quorum is met, plurality decides; if not, **Rejected** (no quorum).
+/// Core finalization logic (no pause check). Used by [`finalize_claim`] and permissionless [`process_deadline`].
+fn finalize_claim_inner(env: &Env, claim_id: u64) -> Result<ClaimStatus, Error> {
     let mut claim = storage::get_claim(env, claim_id).ok_or(Error::ClaimNotFound)?;
 
     if claim.status.is_terminal() {
@@ -367,10 +493,20 @@ pub fn finalize_claim(env: &Env, claim_id: u64) -> Result<ClaimStatus, Error> {
 
     let status_before = claim.status.clone();
 
-    if claim.approve_votes > claim.reject_votes {
-        claim.status = ClaimStatus::Approved;
+    let voters = storage::get_claim_voters(env, claim_id);
+    let eligible = voters.len() as u32;
+    let cast = claim.approve_votes + claim.reject_votes;
+    let quorum_bps = storage::get_claim_quorum_bps(env, claim_id);
+
+    if participation_quorum_met(cast, eligible, quorum_bps) {
+        if claim.approve_votes > claim.reject_votes {
+            claim.status = ClaimStatus::Approved;
+        } else {
+            claim.status = ClaimStatus::Rejected;
+            claim.appeal_open_deadline_ledger = now.saturating_add(ledger::APPEAL_OPEN_WINDOW_LEDGERS);
+        }
     } else {
-        // Tie or reject plurality → Rejected (insurer wins tie).
+        // Below minimum participation — no quorum (insurer-favored default).
         claim.status = ClaimStatus::Rejected;
         claim.appeal_open_deadline_ledger = now.saturating_add(ledger::APPEAL_OPEN_WINDOW_LEDGERS);
     }
@@ -382,6 +518,11 @@ pub fn finalize_claim(env: &Env, claim_id: u64) -> Result<ClaimStatus, Error> {
     let newly_rejected = claim.status == ClaimStatus::Rejected;
 
     storage::set_open_claim(env, &claim.claimant, claim.policy_id, false);
+
+    if status_before == ClaimStatus::Processing && claim.status != ClaimStatus::Processing {
+        storage::remove_claim_rate_limit_prev(env, claim_id);
+    }
+
     let status = claim.status.clone();
     storage::set_claim(env, &claim);
 
@@ -391,6 +532,30 @@ pub fn finalize_claim(env: &Env, claim_id: u64) -> Result<ClaimStatus, Error> {
     }
 
     Ok(status)
+}
+
+pub fn finalize_claim(env: &Env, claim_id: u64) -> Result<ClaimStatus, Error> {
+    // Check pause: finalization is blocked if claims_paused is true
+    storage::assert_claims_not_paused(env);
+    finalize_claim_inner(env, claim_id)
+}
+
+/// Permissionless keeper: same outcome as [`finalize_claim`] when voting has ended, but returns
+/// [`Error::CalculatorPaused`] if `claims_paused` is set instead of panicking.
+///
+/// Only [`ClaimStatus::Processing`] claims are eligible so keepers cannot advance appeal or other flows.
+pub fn process_deadline(env: &Env, claim_id: u64) -> Result<ClaimStatus, Error> {
+    if storage::get_pause_flags(env).claims_paused {
+        return Err(Error::CalculatorPaused);
+    }
+    let claim = storage::get_claim(env, claim_id).ok_or(Error::ClaimNotFound)?;
+    if claim.status.is_terminal() {
+        return Err(Error::ClaimAlreadyTerminal);
+    }
+    if claim.status != ClaimStatus::Processing {
+        return Err(Error::ClaimNotProcessing);
+    }
+    finalize_claim_inner(env, claim_id)
 }
 
 // ── process_claim (admin payout trigger) ─────────────────────────────────────
@@ -422,6 +587,7 @@ pub fn process_claim(env: &Env, claim_id: u64) -> Result<(), Error> {
     claim.status = ClaimStatus::Paid;
     push_status_transition(&mut claim.status_history, ClaimStatus::Paid, now);
     storage::set_open_claim(env, &claim.claimant, claim.policy_id, false);
+    storage::remove_claim_rate_limit_prev(env, claim_id);
     storage::set_claim(env, &claim);
     Ok(())
 }

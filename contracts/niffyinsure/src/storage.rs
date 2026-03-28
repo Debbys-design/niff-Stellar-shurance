@@ -54,8 +54,14 @@ pub enum DataKey {
     AppealVote(u64, Address),
     /// Configurable voting window in ledgers (set by admin via set_voting_duration_ledgers).
     VoteDurLedgers,
+    /// Participation quorum in basis points (1–10_000). New claims snapshot this at filing.
+    QuorumBps,
     /// Configurable grace period in ledgers after nominal expiry for late renewals.
     GracePeriodLedgers,
+    /// Per-claim snapshot of `QuorumBps` at `file_claim` time (immutable for that claim).
+    ClaimQuorumBps(u64),
+    /// Value of `LastClaimLedger(claimant)` **before** this claim's filing updated it.
+    ClaimRateLimitPrev(u64),
 }
 
 // ── Instance bump ─────────────────────────────────────────────────────────────
@@ -149,6 +155,36 @@ pub fn get_voting_duration_ledgers(env: &Env) -> u32 {
         .instance()
         .get(&DataKey::VoteDurLedgers)
         .unwrap_or(ledger::VOTE_WINDOW_LEDGERS)
+}
+
+// ── Claim voting quorum (instance + per-claim snapshot) ───────────────────────
+
+pub fn set_quorum_bps(env: &Env, bps: u32) {
+    env.storage().instance().set(&DataKey::QuorumBps, &bps);
+}
+
+/// Current instance quorum (basis points). Defaults to [`crate::types::DEFAULT_QUORUM_BPS`].
+pub fn get_quorum_bps(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&DataKey::QuorumBps)
+        .unwrap_or(crate::types::DEFAULT_QUORUM_BPS)
+}
+
+pub fn set_claim_quorum_bps(env: &Env, claim_id: u64, bps: u32) {
+    let key = DataKey::ClaimQuorumBps(claim_id);
+    env.storage().persistent().set(&key, &bps);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
+}
+
+/// Quorum basis points frozen for this claim at filing. Missing key ⇒ legacy claim.
+pub fn get_claim_quorum_bps(env: &Env, claim_id: u64) -> u32 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::ClaimQuorumBps(claim_id))
+        .unwrap_or(crate::types::DEFAULT_QUORUM_BPS)
 }
 
 // ── Grace period (instance) ───────────────────────────────────────────────────
@@ -503,6 +539,40 @@ pub fn get_last_claim_ledger(env: &Env, holder: &Address) -> Option<u32> {
     env.storage()
         .persistent()
         .get(&DataKey::LastClaimLedger(holder.clone()))
+}
+
+pub fn remove_last_claim_ledger(env: &Env, holder: &Address) {
+    let key = DataKey::LastClaimLedger(holder.clone());
+    if env.storage().persistent().has(&key) {
+        env.storage().persistent().remove(&key);
+    }
+}
+
+/// Snapshot `LastClaimLedger` before filing (only written when `prev` is `Some`).
+pub fn set_claim_rate_limit_prev(env: &Env, claim_id: u64, prev: Option<u32>) {
+    if let Some(ledger) = prev {
+        let key = DataKey::ClaimRateLimitPrev(claim_id);
+        env.storage().persistent().set(&key, &ledger);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
+    }
+}
+
+pub fn remove_claim_rate_limit_prev(env: &Env, claim_id: u64) {
+    let key = DataKey::ClaimRateLimitPrev(claim_id);
+    if env.storage().persistent().has(&key) {
+        env.storage().persistent().remove(&key);
+    }
+}
+
+pub fn take_claim_rate_limit_prev(env: &Env, claim_id: u64) -> Option<u32> {
+    let key = DataKey::ClaimRateLimitPrev(claim_id);
+    let v: Option<u32> = env.storage().persistent().get(&key);
+    if env.storage().persistent().has(&key) {
+        env.storage().persistent().remove(&key);
+    }
+    v
 }
 
 // ── Sweep cap (instance) ──────────────────────────────────────────────────────

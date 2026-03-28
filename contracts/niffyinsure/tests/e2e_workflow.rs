@@ -166,8 +166,10 @@ fn e2e_finalize_after_deadline() {
 
     let holder = Address::generate(&env);
     let voter1 = Address::generate(&env);
+    let voter2 = Address::generate(&env);
     fund_holder(&env, &client, &token, &holder);
     seed_voter(&client, &voter1);
+    seed_voter(&client, &voter2);
 
     // Initiate policy
     let policy = client.initiate_policy(
@@ -187,9 +189,8 @@ fn e2e_finalize_after_deadline() {
     let urls = vec![&env];
     let claim_id = client.file_claim(&holder, &policy_id, &100_000, &details, &urls);
 
-    // Vote once (not enough for majority)
-    client.vote_on_claim(&voter1, &claim_id, &VoteOption::Approve);
-
+    // No votes: participation quorum is unmet until enough ballots are cast; after the
+    // deadline, `finalize_claim` rejects (insurer-favored no-quorum path).
     let claim = client.get_claim(&claim_id);
 
     // Advance ledger past the stored voting deadline.
@@ -200,9 +201,8 @@ fn e2e_finalize_after_deadline() {
     // Finalize after deadline
     client.finalize_claim(&claim_id);
 
-    // Verify claim is Rejected (tie/partial = reject)
     let claim = client.get_claim(&claim_id);
-    assert!(claim.status == ClaimStatus::Rejected || claim.status == ClaimStatus::Approved);
+    assert_eq!(claim.status, ClaimStatus::Rejected);
 }
 
 // ── Pause Behavior Tests ───────────────────────────────────────────────────────

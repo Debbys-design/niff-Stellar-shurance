@@ -181,14 +181,20 @@ pub fn map_quote_error(env: &Env, err: Error) -> QuoteFailure {
         Error::TooManyImageUrls => "too many image URLs supplied",
         Error::ImageUrlTooLong => "image URL exceeds maximum length",
         Error::ReasonTooLong => "termination reason exceeds maximum length",
-        Error::ClaimAlreadyTerminal => "claim already reached a terminal status",
+        Error::ClaimAlreadyTerminal => {
+            "claim already terminal, or withdrawal blocked (voting started or not Processing)"
+        }
         Error::DuplicateVote => "duplicate vote detected",
         Error::CalculatorNotSet => "no external calculator configured",
         Error::CalculatorCallFailed => "cross-contract call to premium calculator failed",
-        Error::CalculatorPaused => "premium calculator is paused; policy bind rejected",
+        Error::CalculatorPaused => {
+            "premium calculator is paused; policy bind rejected; or claims_paused blocks finalize_claim / process_deadline"
+        }
         Error::VotingWindowClosed => "voting window has closed; use finalize_claim",
         Error::VotingWindowStillOpen => "voting window is still open; cannot finalize yet",
-        Error::NotEligibleVoter => "caller is not in the claim voter snapshot",
+        Error::NotEligibleVoter => {
+            "caller is not in the claim voter snapshot, or is not the claimant for withdraw_claim"
+        }
         Error::RateLimitExceeded => "claim rate-limit: wait before filing another claim",
         Error::AppealWindowClosed => "appeal window has closed",
         Error::AppealAlreadyOpen => "an appeal is already open for this claim",
@@ -197,9 +203,11 @@ pub fn map_quote_error(env: &Env, err: Error) -> QuoteFailure {
         Error::AppealNotOpen => "no appeal is currently open",
         Error::AppealWindowStillOpen => "appeal voting window is still open; cannot finalize yet",
         Error::VotingDurationOutOfBounds => {
-            "voting duration ledgers outside allowed min/max; see contract docs"
+            "voting_duration_ledgers or quorum_bps outside allowed range, or get_policies_batch exceeded max keys; see contract docs"
         }
-        Error::PolicyBatchTooLarge => "batch exceeds maximum allowed keys per call",
+        Error::ClaimNotProcessing => {
+            "process_deadline: claim must be in Processing (not appeal or other non-base state)"
+        }
     };
     QuoteFailure {
         code: err as u32,

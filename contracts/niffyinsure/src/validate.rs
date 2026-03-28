@@ -67,8 +67,10 @@ pub enum Error {
     AppealWindowStillOpen = 48,
     /// Admin `set_voting_duration_ledgers` value outside allowed [min, max] range.
     VotingDurationOutOfBounds = 49,
-    /// Batch get exceeded POLICY_BATCH_GET_MAX.
-    PolicyBatchTooLarge = 50,
+    /// Keeper `process_deadline`: claim must be in base `Processing` state (not appeal, etc.).
+    /// Note: `get_policies_batch` over the key cap uses [`Error::VotingDurationOutOfBounds`]
+    /// so the contract error enum stays within the Soroban 50-case spec limit.
+    ClaimNotProcessing = 50,
 }
 
 pub fn check_policy(policy: &Policy) -> Result<(), Error> {
@@ -90,6 +92,14 @@ pub fn check_policy_active(policy: &Policy, current_ledger: u32) -> Result<(), E
     }
     if current_ledger >= policy.end_ledger {
         return Err(Error::PolicyExpired);
+    }
+    Ok(())
+}
+
+pub fn validate_quorum_bps(bps: u32) -> Result<(), Error> {
+    use crate::types::{QUORUM_BPS_MAX, QUORUM_BPS_MIN};
+    if !(QUORUM_BPS_MIN..=QUORUM_BPS_MAX).contains(&bps) {
+        return Err(Error::VotingDurationOutOfBounds);
     }
     Ok(())
 }

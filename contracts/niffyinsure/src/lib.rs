@@ -27,6 +27,7 @@ use soroban_sdk::{contract, contractevent, contractimpl, panic_with_error, Addre
 pub struct NiffyInsure;
 pub use admin::AdminError;
 pub use policy::RenewalError;
+pub use policy_lifecycle::PolicyError;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[soroban_sdk::contracterror]
@@ -48,6 +49,13 @@ struct AllowedAssetUpdated {
 struct VotingDurationUpdated {
     pub old_ledgers: u32,
     pub new_ledgers: u32,
+}
+
+#[contractevent(topics = ["niffyinsure", "quorum_updated"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct QuorumUpdated {
+    pub old_bps: u32,
+    pub new_bps: u32,
 }
 
 #[contractevent(topics = ["niffyinsure", "pause_toggled"])]
@@ -76,6 +84,7 @@ impl NiffyInsure {
         storage::set_multiplier_table(&env, &premium::default_multiplier_table(&env));
         storage::set_allowed_asset(&env, &token, true);
         storage::set_voting_duration_ledgers(&env, ledger::VOTE_WINDOW_LEDGERS);
+        storage::set_quorum_bps(&env, types::DEFAULT_QUORUM_BPS);
         Ok(())
     }
 
@@ -147,6 +156,7 @@ impl NiffyInsure {
             41 => validate::Error::NotEligibleVoter,
             42 => validate::Error::RateLimitExceeded,
             49 => validate::Error::VotingDurationOutOfBounds,
+            50 => validate::Error::ClaimNotProcessing,
             _ => validate::Error::ClaimNotApproved,
         };
         policy::map_quote_error(&env, err)
@@ -189,6 +199,16 @@ impl NiffyInsure {
         claim::file_claim(&env, &holder, policy_id, amount, &details, &image_urls)
     }
 
+    /// Claimant-only: withdraw before any vote is cast (`Processing`, zero tallies).
+    pub fn withdraw_claim(
+        env: Env,
+        claimant: Address,
+        claim_id: u64,
+    ) -> Result<(), validate::Error> {
+        claimant.require_auth();
+        claim::withdraw_claim(&env, &claimant, claim_id)
+    }
+
     pub fn vote_on_claim(
         env: Env,
         voter: Address,
@@ -201,6 +221,24 @@ impl NiffyInsure {
 
     pub fn finalize_claim(env: Env, claim_id: u64) -> Result<types::ClaimStatus, validate::Error> {
         claim::finalize_claim(&env, claim_id)
+    }
+
+    /// Permissionless keeper: deactivate policy after `end_ledger + grace_period_ledgers`.
+    /// `holder` identifies the policy record (no authentication).
+    pub fn process_expired(
+        env: Env,
+        holder: Address,
+        policy_id: u32,
+    ) -> Result<(), policy_lifecycle::PolicyError> {
+        policy_lifecycle::process_expired(&env, holder, policy_id)
+    }
+
+    /// Permissionless keeper: finalize claim when past `voting_deadline_ledger` (same rules as `finalize_claim`).
+    pub fn process_deadline(
+        env: Env,
+        claim_id: u64,
+    ) -> Result<types::ClaimStatus, validate::Error> {
+        claim::process_deadline(&env, claim_id)
     }
 
     pub fn get_claim_history(
@@ -222,6 +260,31 @@ impl NiffyInsure {
         admin.require_auth();
         ledger::validate_voting_duration_ledgers(ledgers)?;
         storage::set_voting_duration_ledgers(&env, ledgers);
+        Ok(())
+    }
+
+    /// Participation quorum in basis points (1–10_000). Applies to **new** claims only;
+    /// each claim stores a snapshot at `file_claim` so `Processing` claims keep their `quorum_bps`.
+    pub fn get_quorum_bps(env: Env) -> u32 {
+        storage::get_quorum_bps(&env)
+    }
+
+    /// Basis points snapshot for this claim (immutable after filing).
+    pub fn get_claim_quorum_bps(env: Env, claim_id: u64) -> u32 {
+        storage::get_claim_quorum_bps(&env, claim_id)
+    }
+
+    pub fn admin_set_quorum_bps(env: Env, quorum_bps: u32) -> Result<(), validate::Error> {
+        let admin = storage::get_admin(&env);
+        admin.require_auth();
+        validate::validate_quorum_bps(quorum_bps)?;
+        let old = storage::get_quorum_bps(&env);
+        storage::set_quorum_bps(&env, quorum_bps);
+        QuorumUpdated {
+            old_bps: old,
+            new_bps: quorum_bps,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -411,7 +474,7 @@ impl NiffyInsure {
     /// Matches [`types::PAGE_SIZE_MAX`]: each entry is an independent storage read, so
     /// large batches multiply metered reads and can exceed the default Soroban
     /// instruction budget during simulation. Dashboards and indexers must chunk
-    /// requests. **More than 20 keys reverts** with [`validate::Error::PolicyBatchTooLarge`]
+    /// requests. **More than 20 keys reverts** with [`validate::Error::VotingDurationOutOfBounds`]
     /// (unlike `list_policies`, which clamps `limit` instead of erroring).
     ///
     /// The cap is checked **before** any policy storage access (no unbounded iteration).
@@ -420,7 +483,7 @@ impl NiffyInsure {
         ids: Vec<types::PolicyLookupKey>,
     ) -> Vec<Option<types::Policy>> {
         if ids.len() > types::POLICY_BATCH_GET_MAX {
-            panic_with_error!(&env, validate::Error::PolicyBatchTooLarge);
+            panic_with_error!(&env, validate::Error::VotingDurationOutOfBounds);
         }
         let mut out: Vec<Option<types::Policy>> = Vec::new(&env);
         for i in 0..ids.len() {

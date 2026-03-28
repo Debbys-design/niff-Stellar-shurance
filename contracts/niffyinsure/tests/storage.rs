@@ -231,12 +231,14 @@ fn full_claim_vote_flow_approve() {
 
     let holder = Address::generate(&env);
     let voter2 = Address::generate(&env);
+    let voter3 = Address::generate(&env);
 
     env.as_contract(&contract_id, || {
         let policy = make_policy(&holder, 1, &token_addr);
         storage::set_policy(&env, &holder, 1, &policy);
         storage::add_voter(&env, &holder);
         storage::add_voter(&env, &voter2);
+        storage::add_voter(&env, &voter3);
     });
 
     let details = String::from_str(&env, "roof collapsed");
@@ -244,11 +246,11 @@ fn full_claim_vote_flow_approve() {
     assert_eq!(claim_id, 1u64);
     assert_eq!(client.get_claim_counter(), 1u64);
 
-    // 1 of 2 votes — not yet majority
+    // 1 of 3 ballots — participation quorum not yet met
     let s1 = client.vote_on_claim(&holder, &claim_id, &VoteOption::Approve);
     assert_eq!(s1, ClaimStatus::Processing);
 
-    // 2 of 2 votes — majority reached → Approved
+    // 2 of 3 — quorum met; unanimous approve so far → Approved
     let s2 = client.vote_on_claim(&voter2, &claim_id, &VoteOption::Approve);
     assert_eq!(s2, ClaimStatus::Approved);
 
@@ -268,12 +270,14 @@ fn full_claim_vote_flow_reject() {
     let client = NiffyInsureClient::new(&env, &contract_id);
     let holder = Address::generate(&env);
     let voter2 = Address::generate(&env);
+    let voter3 = Address::generate(&env);
 
     env.as_contract(&contract_id, || {
         let policy = make_policy(&holder, 1, &token);
         storage::set_policy(&env, &holder, 1, &policy);
         storage::add_voter(&env, &holder);
         storage::add_voter(&env, &voter2);
+        storage::add_voter(&env, &voter3);
     });
 
     let details = String::from_str(&env, "fraudulent claim");
