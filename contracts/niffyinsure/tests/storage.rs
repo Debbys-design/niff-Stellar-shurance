@@ -41,6 +41,7 @@ fn make_policy(holder: &Address, policy_id: u32, asset: &Address) -> Policy {
         start_ledger: 0,
         end_ledger: 9_999_999,
         asset: asset.clone(),
+        beneficiary: None,
         terminated_at_ledger: 0,
         termination_reason: TerminationReason::None,
         terminated_by_admin: false,
@@ -168,6 +169,7 @@ fn set_and_get_claim_round_trip() {
             appeal_deadline_ledger: 0,
             appeal_approve_votes: 0,
             appeal_reject_votes: 0,
+            status_history: soroban_sdk::Vec::new(&env),
         };
         storage::set_claim(&env, &claim);
         let loaded = storage::get_claim(&env, 1).expect("claim must exist");
@@ -444,6 +446,7 @@ fn make_claim(env: &Env, claim_id: u64, holder: &Address, asset: &Address) -> ni
         appeal_deadline_ledger: 0,
         appeal_approve_votes: 0,
         appeal_reject_votes: 0,
+        status_history: soroban_sdk::Vec::new(env),
     }
 }
 
@@ -528,7 +531,7 @@ fn list_claims_oversize_request_clamped() {
 
 #[test]
 fn generate_premium_does_not_mutate_counters() {
-    use niffyinsure::types::{AgeBand, CoverageType, RegionTier, RiskInput};
+    use niffyinsure::types::{AgeBand, CoverageTier, RegionTier, RiskInput};
 
     let (env, contract_id, _, _) = setup();
     let client = NiffyInsureClient::new(&env, &contract_id);
@@ -540,7 +543,7 @@ fn generate_premium_does_not_mutate_counters() {
     let input = RiskInput {
         region: RegionTier::Medium,
         age_band: AgeBand::Adult,
-        coverage: CoverageType::Standard,
+        coverage: CoverageTier::Standard,
         safety_score: 0,
     };
     client.generate_premium(&input, &10_000_000i128, &false);

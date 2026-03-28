@@ -56,16 +56,17 @@ fn make_second_asset<'a>(t: &'a TestEnv<'a>) -> (Address, token::StellarAssetCli
 }
 
 fn initiate(t: &TestEnv, holder: &Address, asset: &Address) -> niffyinsure::types::Policy {
-    use niffyinsure::types::{AgeBand, CoverageType, PolicyType, RegionTier};
+    use niffyinsure::types::{AgeBand, CoverageTier, PolicyType, RegionTier};
     t.client.initiate_policy(
         holder,
         &PolicyType::Auto,
         &RegionTier::Low,
         &AgeBand::Adult,
-        &CoverageType::Standard,
+        &CoverageTier::Standard,
         &5u32,
         &1_000_000_000i128,
         asset,
+        &None,
     )
 }
 
@@ -100,10 +101,11 @@ fn initiate_policy_rejects_non_allowlisted_asset() {
         &niffyinsure::types::PolicyType::Health,
         &niffyinsure::types::RegionTier::Medium,
         &niffyinsure::types::AgeBand::Adult,
-        &niffyinsure::types::CoverageType::Standard,
+        &niffyinsure::types::CoverageTier::Standard,
         &3u32,
         &500_000_000i128,
         &token_b,
+        &None,
     );
     assert!(result.is_err(), "expected AssetNotAllowed error");
 }
@@ -264,6 +266,7 @@ fn claim_payout_uses_policy_bound_asset() {
         appeal_deadline_ledger: 0,
         appeal_approve_votes: 0,
         appeal_reject_votes: 0,
+        status_history: Vec::new(&t.env),
     };
     t.env.as_contract(&t.contract_id, || {
         niffyinsure::storage::set_claim(&t.env, &claim);
@@ -323,6 +326,7 @@ fn claim_with_disallowed_bound_asset_is_rejected() {
         appeal_deadline_ledger: 0,
         appeal_approve_votes: 0,
         appeal_reject_votes: 0,
+        status_history: Vec::new(&t.env),
     };
     t.env.as_contract(&t.contract_id, || {
         niffyinsure::storage::set_claim(&t.env, &claim);
@@ -374,10 +378,11 @@ fn removing_asset_from_allowlist_blocks_new_policies() {
         &niffyinsure::types::PolicyType::Auto,
         &niffyinsure::types::RegionTier::Low,
         &niffyinsure::types::AgeBand::Adult,
-        &niffyinsure::types::CoverageType::Standard,
+        &niffyinsure::types::CoverageTier::Standard,
         &5u32,
         &1_000_000_000i128,
         &token_b,
+        &None,
     );
     assert!(result.is_err(), "expected AssetNotAllowed after removal");
 }

@@ -6,6 +6,7 @@
 
 export type PolicyType = "Auto" | "Health" | "Property";
 export type RegionTier = "Low" | "Medium" | "High";
+export type CoverageTier = "Basic" | "Standard" | "Premium";
 export type ClaimStatus = "Processing" | "Approved" | "Rejected";
 
 /** On-chain Policy record (internal representation). */
@@ -15,6 +16,7 @@ export interface Policy {
   /** Per-holder monotonic u32 (starts at 1). Not globally unique alone. */
   policy_id: number;
   policy_type: PolicyType;
+  coverage_tier: CoverageTier;
   region: RegionTier;
   /** Annual premium in stroops (i128 stored as string). */
   premium: string;
@@ -27,6 +29,11 @@ export interface Policy {
   end_ledger: number;
   /** Globally unique surrogate key for cursor pagination (assigned at insert). */
   global_seq: number;
+  /**
+   * Optional Stellar address receiving claim payouts when set on-chain.
+   * Omitted or null means payouts go to the holder.
+   */
+  beneficiary?: string | null;
 }
 
 /** On-chain Claim record (internal representation). */

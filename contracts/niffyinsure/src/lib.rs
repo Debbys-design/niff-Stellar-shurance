@@ -21,11 +21,12 @@ mod oracle;
 #[cfg(feature = "experimental")]
 pub use oracle::*;
 
-use soroban_sdk::{contract, contractevent, contractimpl, Address, Env, Vec};
+use soroban_sdk::{contract, contractevent, contractimpl, panic_with_error, Address, Env, Vec};
 
 #[contract]
 pub struct NiffyInsure;
 pub use admin::AdminError;
+pub use policy::RenewalError;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[soroban_sdk::contracterror]
@@ -176,12 +177,6 @@ impl NiffyInsure {
         storage::is_allowed_asset(&env, &asset)
     }
 
-    pub fn process_claim(env: Env, claim_id: u64) -> Result<(), validate::Error> {
-        let admin = storage::get_admin(&env);
-        admin.require_auth();
-        claim::process_claim(&env, claim_id)
-    }
-
     pub fn file_claim(
         env: Env,
         holder: Address,
@@ -206,6 +201,71 @@ impl NiffyInsure {
 
     pub fn finalize_claim(env: Env, claim_id: u64) -> Result<types::ClaimStatus, validate::Error> {
         claim::finalize_claim(&env, claim_id)
+    }
+
+    pub fn get_claim_history(
+        env: Env,
+        claim_id: u64,
+    ) -> Result<Vec<types::ClaimStatusHistoryEntry>, validate::Error> {
+        claim::get_claim_history(&env, claim_id)
+    }
+
+    pub fn get_vote_duration_ledgers(env: Env) -> u32 {
+        storage::get_voting_duration_ledgers(&env)
+    }
+
+    pub fn admin_set_vote_duration_ledgers(
+        env: Env,
+        ledgers: u32,
+    ) -> Result<(), validate::Error> {
+        let admin = storage::get_admin(&env);
+        admin.require_auth();
+        ledger::validate_voting_duration_ledgers(ledgers)?;
+        storage::set_voting_duration_ledgers(&env, ledgers);
+        Ok(())
+    }
+
+    // ── Grace period ──────────────────────────────────────────────────────────
+
+    /// Admin-only: set the grace period (in ledgers) after nominal expiry during
+    /// which late renewals are still accepted. Emits GracePeriodUpdated.
+    pub fn set_grace_period_ledgers(env: Env, ledgers: u32) -> Result<(), policy::RenewalError> {
+        storage::bump_instance(&env);
+        policy::set_grace_period_ledgers(&env, ledgers)
+    }
+
+    pub fn get_grace_period_ledgers(env: Env) -> u32 {
+        policy::get_grace_period_ledgers(&env)
+    }
+
+    // ── Renewal ───────────────────────────────────────────────────────────────
+
+    /// Renew an existing active policy within the standard or grace window.
+    pub fn renew_policy(
+        env: Env,
+        holder: Address,
+        policy_id: u32,
+        age_band: types::AgeBand,
+        coverage_type: types::CoverageTier,
+        safety_score: u32,
+        base_amount: i128,
+    ) -> Result<types::Policy, policy::RenewalError> {
+        storage::bump_instance(&env);
+        policy::renew_policy(
+            &env,
+            holder,
+            policy_id,
+            age_band,
+            coverage_type,
+            safety_score,
+            base_amount,
+        )
+    }
+
+    pub fn process_claim(env: Env, claim_id: u64) -> Result<(), validate::Error> {
+        let admin = storage::get_admin(&env);
+        admin.require_auth();
+        claim::process_claim(&env, claim_id)
     }
 
     pub fn get_claim(env: Env, claim_id: u64) -> Result<types::Claim, validate::Error> {
@@ -306,10 +366,11 @@ impl NiffyInsure {
         policy_type: types::PolicyType,
         region: types::RegionTier,
         age_band: types::AgeBand,
-        coverage_type: types::CoverageType,
+        coverage_type: types::CoverageTier,
         safety_score: u32,
         base_amount: i128,
         asset: Address,
+        beneficiary: Option<Address>,
     ) -> Result<types::Policy, policy::PolicyError> {
         policy::initiate_policy(
             &env,
@@ -321,12 +382,52 @@ impl NiffyInsure {
             safety_score,
             base_amount,
             asset,
+            beneficiary,
         )
+    }
+
+    /// Set or clear the payout beneficiary. Holder-authenticated only.
+    pub fn set_beneficiary(
+        env: Env,
+        holder: Address,
+        policy_id: u32,
+        beneficiary: Option<Address>,
+    ) -> Result<(), policy::PolicyError> {
+        policy::set_beneficiary(&env, holder, policy_id, beneficiary)
     }
 
     /// Read-only: retrieve a persisted policy by (holder, policy_id).
     pub fn get_policy(env: Env, holder: Address, policy_id: u32) -> Option<types::Policy> {
         storage::get_policy(&env, &holder, policy_id)
+    }
+
+    /// Batch-read policies in one simulation/RPC round-trip.
+    ///
+    /// Returns `Vec` aligned with `ids`: `out[i]` is `Some(policy)` or `None` if that
+    /// key is missing — absent keys never revert the whole batch.
+    ///
+    /// # Hard cap — **`POLICY_BATCH_GET_MAX` (20)**
+    ///
+    /// Matches [`types::PAGE_SIZE_MAX`]: each entry is an independent storage read, so
+    /// large batches multiply metered reads and can exceed the default Soroban
+    /// instruction budget during simulation. Dashboards and indexers must chunk
+    /// requests. **More than 20 keys reverts** with [`validate::Error::PolicyBatchTooLarge`]
+    /// (unlike `list_policies`, which clamps `limit` instead of erroring).
+    ///
+    /// The cap is checked **before** any policy storage access (no unbounded iteration).
+    pub fn get_policies_batch(
+        env: Env,
+        ids: Vec<types::PolicyLookupKey>,
+    ) -> Vec<Option<types::Policy>> {
+        if ids.len() > types::POLICY_BATCH_GET_MAX {
+            panic_with_error!(&env, validate::Error::PolicyBatchTooLarge);
+        }
+        let mut out: Vec<Option<types::Policy>> = Vec::new(&env);
+        for i in 0..ids.len() {
+            let key = ids.get(i).unwrap();
+            out.push_back(storage::get_policy(&env, &key.holder, key.policy_id));
+        }
+        out
     }
 
     /// Paginated listing of a holder's policies, ordered by ascending policy_id.
@@ -613,6 +714,7 @@ impl NiffyInsure {
             start_ledger: 1,
             end_ledger,
             asset: token,
+            beneficiary: None,
             terminated_at_ledger: 0,
             termination_reason: TerminationReason::None,
             terminated_by_admin: false,
@@ -627,6 +729,19 @@ impl NiffyInsure {
 
     pub fn test_remove_voter(env: Env, holder: Address) {
         storage::remove_voter(&env, &holder);
+    }
+
+    /// Test-only: advance a seeded policy's end_ledger to simulate a renewal
+    /// without going through token transfer. Mirrors what renew_policy does
+    /// to the policy record after premium collection.
+    pub fn test_renew_policy(env: Env, holder: Address, policy_id: u32) {
+        let mut policy = storage::get_policy(&env, &holder, policy_id)
+            .expect("policy not found");
+        let new_start = policy.end_ledger.saturating_add(1);
+        let new_end = new_start + ledger::POLICY_DURATION_LEDGERS;
+        policy.start_ledger = new_start;
+        policy.end_ledger = new_end;
+        storage::set_policy(&env, &holder, policy_id, &policy);
     }
 
     pub fn admin_set_open_claim_count(
