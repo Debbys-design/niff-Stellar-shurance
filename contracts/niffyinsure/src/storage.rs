@@ -590,3 +590,29 @@ pub fn set_rolling_claim_state(
         .persistent()
         .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
 }
+
+// ── Policy expiry notification (instance) ─────────────────────────────────────
+
+/// Last `end_ledger` for which `PolicyExpired` was emitted for this policy term.
+pub fn get_policy_expired_event_end_ledger(
+    env: &Env,
+    holder: &Address,
+    policy_id: u32,
+) -> Option<u32> {
+    env.storage().instance().get(&DataKey::PolicyExpiredEventEndLedger(
+        holder.clone(),
+        policy_id,
+    ))
+}
+
+pub fn set_policy_expired_event_end_ledger(
+    env: &Env,
+    holder: &Address,
+    policy_id: u32,
+    end_ledger: u32,
+) {
+    env.storage().instance().set(
+        &DataKey::PolicyExpiredEventEndLedger(holder.clone(), policy_id),
+        &end_ledger,
+    );
+}
