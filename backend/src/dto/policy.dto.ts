@@ -10,7 +10,7 @@
  * - Fields are documented with JSDoc for OpenAPI generation.
  */
 
-import { Claim, Policy } from "../types/policy";
+import { Claim, CoverageTier, Policy } from "../types/policy";
 
 /** Summary of a related claim, linked from a policy response. */
 export interface ClaimSummaryDto {
@@ -33,6 +33,11 @@ export interface ClaimSummaryDto {
   approve_votes: number;
   /** Number of reject votes cast by policyholders. */
   reject_votes: number;
+  /**
+   * On-chain voting deadline ledger (inclusive); same as contract `voting_deadline_ledger`.
+   * @example 1250000
+   */
+  voting_deadline_ledger?: number;
   /**
    * Link to the full claim resource.
    * @example "/claims/42"
@@ -110,6 +115,8 @@ export interface PolicyDto {
    * @example "Auto"
    */
   policy_type: "Auto" | "Health" | "Property";
+  /** Coverage tier used for premium calculation. @example "Standard" */
+  coverage_tier: CoverageTier;
   /**
    * Geographic risk tier used for premium calculation.
    * @example "Medium"
@@ -129,6 +136,11 @@ export interface PolicyDto {
    * Empty array if no claims exist.
    */
   claims: ClaimSummaryDto[];
+  /**
+   * Optional payout beneficiary (on-chain). When set, approved claim proceeds
+   * are sent here instead of the holder. Null/omitted means holder receives payout.
+   */
+  beneficiary: string | null;
   /**
    * Self-link for this policy resource.
    * @example "/policies/GABC.../1"
@@ -164,6 +176,7 @@ export function toClaimSummaryDto(c: Claim): ClaimSummaryDto {
     status: c.status,
     approve_votes: c.approve_votes,
     reject_votes: c.reject_votes,
+    voting_deadline_ledger: c.voting_deadline_ledger,
     _link: `/claims/${c.claim_id}`,
   };
 }
@@ -173,6 +186,7 @@ export function toPolicyDto(p: Policy, claims: Claim[]): PolicyDto {
     holder: p.holder,
     policy_id: p.policy_id,
     policy_type: p.policy_type,
+    coverage_tier: p.coverage_tier,
     region: p.region,
     is_active: p.is_active,
     coverage_summary: {
@@ -188,6 +202,7 @@ export function toPolicyDto(p: Policy, claims: Claim[]): PolicyDto {
       avg_ledger_close_seconds: 5,
     },
     claims: claims.map(toClaimSummaryDto),
+    beneficiary: p.beneficiary ?? null,
     _link: `/policies/${encodeURIComponent(p.holder)}/${p.policy_id}`,
   };
 }

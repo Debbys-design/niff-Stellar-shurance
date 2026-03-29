@@ -41,6 +41,7 @@ fn make_policy(holder: &Address, policy_id: u32, asset: &Address) -> Policy {
         start_ledger: 0,
         end_ledger: 9_999_999,
         asset: asset.clone(),
+        beneficiary: None,
         terminated_at_ledger: 0,
         termination_reason: TerminationReason::None,
         terminated_by_admin: false,
@@ -145,7 +146,7 @@ fn add_voter_and_remove_voter() {
 
 #[test]
 fn set_and_get_claim_round_trip() {
-    let (env, contract_id, _, _) = setup();
+    let (env, contract_id, _, token) = setup();
     let holder = Address::generate(&env);
 
     env.as_contract(&contract_id, || {
@@ -155,7 +156,7 @@ fn set_and_get_claim_round_trip() {
             policy_id: 1,
             claimant: holder.clone(),
             amount: 50_000_000,
-            asset: Address::generate(&env),
+            asset: token.clone(),
             details: String::from_str(&env, "water damage"),
             image_urls: vec![&env],
             status: ClaimStatus::Processing,
@@ -168,6 +169,7 @@ fn set_and_get_claim_round_trip() {
             appeal_deadline_ledger: 0,
             appeal_approve_votes: 0,
             appeal_reject_votes: 0,
+            status_history: soroban_sdk::Vec::new(&env),
         };
         storage::set_claim(&env, &claim);
         let loaded = storage::get_claim(&env, 1).expect("claim must exist");
@@ -424,14 +426,14 @@ fn list_policies_limit_clamped_to_page_size_max() {
 
 // ── pagination: list_claims ───────────────────────────────────────────────────
 
-fn make_claim(env: &Env, claim_id: u64, holder: &Address) -> niffyinsure::types::Claim {
+fn make_claim(env: &Env, claim_id: u64, holder: &Address, asset: &Address) -> niffyinsure::types::Claim {
     use niffyinsure::types::{Claim, ClaimStatus};
     Claim {
         claim_id,
         policy_id: 1,
         claimant: holder.clone(),
         amount: 10_000_000,
-        asset: Address::generate(env),
+        asset: asset.clone(),
         details: String::from_str(env, "test"),
         image_urls: vec![env],
         status: ClaimStatus::Processing,
@@ -444,6 +446,7 @@ fn make_claim(env: &Env, claim_id: u64, holder: &Address) -> niffyinsure::types:
         appeal_deadline_ledger: 0,
         appeal_approve_votes: 0,
         appeal_reject_votes: 0,
+        status_history: soroban_sdk::Vec::new(env),
     }
 }
 
@@ -457,13 +460,13 @@ fn list_claims_empty_when_none_filed() {
 
 #[test]
 fn list_claims_first_page() {
-    let (env, contract_id, _, _) = setup();
+    let (env, contract_id, _, token) = setup();
     let client = NiffyInsureClient::new(&env, &contract_id);
     let holder = Address::generate(&env);
 
     env.as_contract(&contract_id, || {
         for id in 1u64..=5 {
-            storage::set_claim(&env, &make_claim(&env, id, &holder));
+            storage::set_claim(&env, &make_claim(&env, id, &holder, &token));
             env.storage().instance().set(&storage::DataKey::ClaimCounter, &id);
         }
     });
@@ -476,13 +479,13 @@ fn list_claims_first_page() {
 
 #[test]
 fn list_claims_last_page_partial() {
-    let (env, contract_id, _, _) = setup();
+    let (env, contract_id, _, token) = setup();
     let client = NiffyInsureClient::new(&env, &contract_id);
     let holder = Address::generate(&env);
 
     env.as_contract(&contract_id, || {
         for id in 1u64..=5 {
-            storage::set_claim(&env, &make_claim(&env, id, &holder));
+            storage::set_claim(&env, &make_claim(&env, id, &holder, &token));
             env.storage().instance().set(&storage::DataKey::ClaimCounter, &id);
         }
     });
@@ -494,12 +497,12 @@ fn list_claims_last_page_partial() {
 
 #[test]
 fn list_claims_cursor_past_end_returns_empty() {
-    let (env, contract_id, _, _) = setup();
+    let (env, contract_id, _, token) = setup();
     let client = NiffyInsureClient::new(&env, &contract_id);
     let holder = Address::generate(&env);
 
     env.as_contract(&contract_id, || {
-        storage::set_claim(&env, &make_claim(&env, 1, &holder));
+        storage::set_claim(&env, &make_claim(&env, 1, &holder, &token));
         env.storage().instance().set(&storage::DataKey::ClaimCounter, &1u64);
     });
 
@@ -509,13 +512,13 @@ fn list_claims_cursor_past_end_returns_empty() {
 
 #[test]
 fn list_claims_oversize_request_clamped() {
-    let (env, contract_id, _, _) = setup();
+    let (env, contract_id, _, token) = setup();
     let client = NiffyInsureClient::new(&env, &contract_id);
     let holder = Address::generate(&env);
 
     env.as_contract(&contract_id, || {
         for id in 1u64..=25 {
-            storage::set_claim(&env, &make_claim(&env, id, &holder));
+            storage::set_claim(&env, &make_claim(&env, id, &holder, &token));
             env.storage().instance().set(&storage::DataKey::ClaimCounter, &id);
         }
     });
@@ -528,7 +531,7 @@ fn list_claims_oversize_request_clamped() {
 
 #[test]
 fn generate_premium_does_not_mutate_counters() {
-    use niffyinsure::types::{AgeBand, CoverageType, RegionTier, RiskInput};
+    use niffyinsure::types::{AgeBand, CoverageTier, RegionTier, RiskInput};
 
     let (env, contract_id, _, _) = setup();
     let client = NiffyInsureClient::new(&env, &contract_id);
@@ -540,7 +543,7 @@ fn generate_premium_does_not_mutate_counters() {
     let input = RiskInput {
         region: RegionTier::Medium,
         age_band: AgeBand::Adult,
-        coverage: CoverageType::Standard,
+        coverage: CoverageTier::Standard,
         safety_score: 0,
     };
     client.generate_premium(&input, &10_000_000i128, &false);

@@ -8,7 +8,7 @@
 #![cfg(test)]
 
 use niffyinsure::{
-    types::{AgeBand, ClaimStatus, CoverageType, PolicyType, RegionTier, VoteOption},
+    types::{AgeBand, ClaimStatus, CoverageTier, PolicyType, RegionTier, VoteOption},
     NiffyInsureClient,
 };
 use soroban_sdk::{
@@ -79,10 +79,11 @@ fn e2e_full_lifecycle_approve() {
         &PolicyType::Auto,
         &RegionTier::Medium,
         &AgeBand::Adult,
-        &CoverageType::Standard,
+        &CoverageTier::Standard,
         &80,        // safety_score
         &1_000_000, // base_amount (coverage)
         &token,
+        &None,
     );
     assert!(policy.is_active);
     let policy_id = policy.policy_id;
@@ -134,10 +135,11 @@ fn e2e_full_lifecycle_reject() {
         &PolicyType::Health,
         &RegionTier::Low,
         &AgeBand::Young,
-        &CoverageType::Premium,
+        &CoverageTier::Premium,
         &90,
         &500_000,
         &token,
+        &None,
     );
     let policy_id = policy.policy_id;
 
@@ -173,10 +175,11 @@ fn e2e_finalize_after_deadline() {
         &PolicyType::Property,
         &RegionTier::High,
         &AgeBand::Adult,
-        &CoverageType::Basic,
+        &CoverageTier::Basic,
         &70,
         &2_000_000,
         &token,
+        &None,
     );
     let policy_id = policy.policy_id;
 
@@ -222,10 +225,11 @@ fn e2e_pause_blocks_initiate() {
         &PolicyType::Auto,
         &RegionTier::Medium,
         &AgeBand::Adult,
-        &CoverageType::Standard,
+        &CoverageTier::Standard,
         &80,
         &1_000_000,
         &token,
+        &None,
     );
     assert!(result.is_err());
 }
@@ -243,10 +247,11 @@ fn e2e_pause_blocks_file_claim() {
         &PolicyType::Auto,
         &RegionTier::Medium,
         &AgeBand::Adult,
-        &CoverageType::Standard,
+        &CoverageTier::Standard,
         &80,
         &1_000_000,
         &token,
+        &None,
     );
 
     // Pause
@@ -273,10 +278,11 @@ fn e2e_pause_blocks_vote() {
         &PolicyType::Auto,
         &RegionTier::Medium,
         &AgeBand::Adult,
-        &CoverageType::Standard,
+        &CoverageTier::Standard,
         &80,
         &1_000_000,
         &token,
+        &None,
     );
 
     let details = String::from_str(&env, "Test");
@@ -310,10 +316,11 @@ fn e2e_unpause_restores_operations() {
         &PolicyType::Auto,
         &RegionTier::Medium,
         &AgeBand::Adult,
-        &CoverageType::Standard,
+        &CoverageTier::Standard,
         &80,
         &1_000_000,
         &token,
+        &None,
     );
     assert!(policy.is_active);
 }
@@ -336,10 +343,11 @@ fn e2e_pause_allows_payout() {
         &PolicyType::Auto,
         &RegionTier::Medium,
         &AgeBand::Adult,
-        &CoverageType::Standard,
+        &CoverageTier::Standard,
         &80,
         &1_000_000,
         &token,
+        &None,
     );
 
     let details = String::from_str(&env, "Test");
@@ -375,10 +383,11 @@ fn e2e_bind_pause_allows_claims() {
         &PolicyType::Auto,
         &RegionTier::Medium,
         &AgeBand::Adult,
-        &CoverageType::Standard,
+        &CoverageTier::Standard,
         &80,
         &1_000_000,
         &token,
+        &None,
     );
 
     // Pause only binding
@@ -418,10 +427,11 @@ fn e2e_claims_pause_allows_binding() {
         &PolicyType::Auto,
         &RegionTier::Medium,
         &AgeBand::Adult,
-        &CoverageType::Standard,
+        &CoverageTier::Standard,
         &80,
         &1_000_000,
         &token,
+        &None,
     );
     assert!(policy.is_active);
 }
@@ -465,10 +475,11 @@ fn e2e_non_admin_cannot_process_claim() {
         &PolicyType::Auto,
         &RegionTier::Medium,
         &AgeBand::Adult,
-        &CoverageType::Standard,
+        &CoverageTier::Standard,
         &80,
         &1_000_000,
         &token,
+        &None,
     );
 
     let details = String::from_str(&env, "Test");
@@ -495,10 +506,11 @@ fn e2e_claim_exceeds_coverage() {
         &PolicyType::Auto,
         &RegionTier::Medium,
         &AgeBand::Adult,
-        &CoverageType::Standard,
+        &CoverageTier::Standard,
         &80,
         &100_000, // coverage
         &token,
+        &None,
     );
 
     // Try to claim more than coverage
@@ -526,10 +538,11 @@ fn e2e_claim_on_inactive_policy() {
         &PolicyType::Auto,
         &RegionTier::Medium,
         &AgeBand::Adult,
-        &CoverageType::Standard,
+        &CoverageTier::Standard,
         &80,
         &1_000_000,
         &token,
+        &None,
     );
 
     // Terminate the policy (if terminate_policy exists)
@@ -569,10 +582,11 @@ fn e2e_double_vote_fails() {
         &PolicyType::Auto,
         &RegionTier::Medium,
         &AgeBand::Adult,
-        &CoverageType::Standard,
+        &CoverageTier::Standard,
         &80,
         &1_000_000,
         &token,
+        &None,
     );
 
     let details = String::from_str(&env, "Test");

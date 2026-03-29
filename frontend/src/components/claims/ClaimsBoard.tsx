@@ -1,19 +1,22 @@
 "use client";
 
 // Feature: claims-board
-// Requirements: 1.1, 1.2, 1.3, 1.4, 4.1, 4.3, 6.1, 6.5, 9.2
+// Requirements: 1.1, 1.2, 1.3, 1.4, 4.1, 4.3, 6.1, 6.5, 9.2, 10.x
 
 import React, { useState, useCallback, useRef, useEffect } from "react";
-import { FilterBar } from "./FilterBar";
-import { ClaimList } from "./ClaimList";
-import { PaginationControls } from "./PaginationControls";
-import { useClaimsData } from "@/lib/hooks/useClaimsData";
-import { useRealtimeTallies } from "@/lib/hooks/useRealtimeTallies";
+
 import { useAuth } from "@/lib/hooks/useAuth";
-import { useQueryParamFilters } from "@/lib/hooks/useQueryParamFilters";
+import { useClaimsData } from "@/lib/hooks/useClaimsData";
 import { useNotifications } from "@/lib/hooks/useNotifications";
-import type { ClaimFilters, TallyUpdate } from "./types";
+import { useQueryParamFilters } from "@/lib/hooks/useQueryParamFilters";
+import { useRealtimeTallies } from "@/lib/hooks/useRealtimeTallies";
 import type { ClaimBoard } from "@/lib/schemas/claims-board";
+
+import { ClaimList } from "./ClaimList";
+import { FilterBar } from "./FilterBar";
+import { PaginationControls } from "./PaginationControls";
+import type { ClaimFilters, TallyUpdate } from "./types";
+
 
 // ---------------------------------------------------------------------------
 // ClaimsBoard
@@ -83,6 +86,22 @@ export function ClaimsBoard() {
   // ── Notifications (Req 10.1, 10.2, 10.3) ─────────────────────────────────
   useNotifications(localClaims, filters);
 
+  // ── Claim status change notifications ────────────────────────────────────
+  const [notifEnabled, setNotifEnabled] = useState(false);
+  // Read from localStorage after mount (avoids SSR mismatch).
+  useEffect(() => {
+    setNotifEnabled(getClaimNotificationsEnabled());
+  }, []);
+
+  const { notify } = useClaimStatusNotifications(notifEnabled);
+
+  // Watch all currently visible claim IDs for status changes.
+  useClaimWatcher({
+    claimIds: claimIds,
+    onStatusChange: notify,
+    enabled: notifEnabled,
+  });
+
   // ── Real-time tally updates (Req 6.1, 6.5) ────────────────────────────────
   const claimIds = localClaims.map((c) => c.claim_id);
 
@@ -101,6 +120,8 @@ export function ClaimsBoard() {
 
   useRealtimeTallies(claimIds, handleTallyUpdate);
 
+  const latestLedger = useLatestLedger();
+
   // ── Filter change resets page to 1 ───────────────────────────────────────
   const handleFiltersChange = useCallback(
     (newFilters: ClaimFilters) => {
@@ -113,6 +134,19 @@ export function ClaimsBoard() {
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="flex flex-col gap-4">
+      {/* Notification permission banner — shown once, never nagged */}
+      <NotificationPermissionBanner
+        onDismiss={() => setNotifEnabled(getClaimNotificationsEnabled())}
+      />
+
+      {/* Settings toggle (inline; move to a settings page as needed) */}
+      <ClaimNotificationsToggle
+        enabled={notifEnabled}
+        onChange={(v) => {
+          setClaimNotificationsEnabled(v);
+          setNotifEnabled(v);
+        }}
+      />
       {/* Re-auth prompt (Req 4.3) */}
       {showReauthPrompt && (
         <div
@@ -181,7 +215,11 @@ export function ClaimsBoard() {
         )}
 
         {!loading && !error && localClaims.length > 0 && (
-          <ClaimList claims={localClaims} isAuthenticated={isAuthenticated} />
+          <ClaimList
+            claims={localClaims}
+            isAuthenticated={isAuthenticated}
+            currentLedger={latestLedger}
+          />
         )}
       </section>
 
