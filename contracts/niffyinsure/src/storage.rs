@@ -1,6 +1,7 @@
 use soroban_sdk::{contracttype, Address, Env, Vec};
 
-use crate::types::{Claim, MultiplierTable, Policy, RollingClaimWindowState, VoteOption};
+use crate::ledger;
+use crate::types::{Claim, MultiplierTable, Policy, VoteOption};
 
 // ── TTL constants ─────────────────────────────────────────────────────────────
 /// Minimum TTL threshold before we extend (in ledgers).
@@ -55,8 +56,10 @@ pub enum DataKey {
     LastClaimLedger(Address),
     /// (claim_id, voter_address) -> VoteOption for appeal round; immutable after first write.
     AppealVote(u64, Address),
-    /// Rolling paid total for `(holder, policy_id)` within the stored `window_start` bucket.
-    RollingClaimState(Address, u32),
+    /// Configurable voting window in ledgers (set by admin via set_voting_duration_ledgers).
+    VoteDurLedgers,
+    /// Configurable grace period in ledgers after nominal expiry for late renewals.
+    GracePeriodLedgers,
 }
 
 // ── Instance bump ─────────────────────────────────────────────────────────────
@@ -133,6 +136,40 @@ pub fn get_treasury(env: &Env) -> Address {
         .instance()
         .get(&DataKey::Treasury)
         .unwrap_or_else(|| env.current_contract_address())
+}
+
+// ── Governance: claim voting duration (instance) ─────────────────────────────
+
+pub fn set_voting_duration_ledgers(env: &Env, ledgers: u32) {
+    env.storage()
+        .instance()
+        .set(&DataKey::VoteDurLedgers, &ledgers);
+}
+
+/// Configured duration added at each `file_claim` to compute `voting_deadline_ledger`.
+/// Defaults to [`ledger::VOTE_WINDOW_LEDGERS`] when unset (pre-migration deployments).
+pub fn get_voting_duration_ledgers(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&DataKey::VoteDurLedgers)
+        .unwrap_or(ledger::VOTE_WINDOW_LEDGERS)
+}
+
+// ── Grace period (instance) ───────────────────────────────────────────────────
+
+pub fn set_grace_period_ledgers(env: &Env, ledgers: u32) {
+    env.storage()
+        .instance()
+        .set(&DataKey::GracePeriodLedgers, &ledgers);
+}
+
+/// Grace period added after nominal expiry for late renewals.
+/// Defaults to [`ledger::DEFAULT_GRACE_PERIOD_LEDGERS`] when unset.
+pub fn get_grace_period_ledgers(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&DataKey::GracePeriodLedgers)
+        .unwrap_or(ledger::DEFAULT_GRACE_PERIOD_LEDGERS)
 }
 
 // ── External calculator address ───────────────────────────────────────────────
