@@ -319,13 +319,6 @@ export class IndexerService {
 
       await this.advanceCursorInTx(tx, network, event.ledger);
     });
-
-    // Use registry-parsed key for post-tx side effects.
-    const parser = selectParser(contractId, event.ledger);
-    const parsedForSideEffects = parser.parse(topics, dataNative, event.ledger, txHash);
-    if (!isWarningRow(parsedForSideEffects) && parsedForSideEffects.key === 'niffyins:tbl_upd') {
-      await this.quoteSimulationCache.invalidateAll();
-    }
   }
 
   private async handlePolicyInitiated(tx: IndexerTx, data: EventPayload, event: SorobanEvent) {
