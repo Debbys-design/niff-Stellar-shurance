@@ -86,7 +86,9 @@ export class ClaimsService {
     const [claims, total] = await Promise.all([
       this.prisma.claim.findMany({
         where,
-        include: { votes: { select: { vote: true } } },
+        include: {
+          votes: { where: { deletedAt: null }, select: { vote: true } },
+        },
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         take: limit,
       }),
@@ -115,7 +117,7 @@ export class ClaimsService {
     const lastLedger = await this.getLastLedger();
 
     const votedClaimIds = await this.prisma.vote.findMany({
-      where: { voterAddress: walletAddress.toLowerCase() },
+      where: { voterAddress: walletAddress.toLowerCase(), deletedAt: null },
       select: { claimId: true },
     });
     const votedIds = votedClaimIds.map((v) => v.claimId);
@@ -130,7 +132,9 @@ export class ClaimsService {
       this.prisma.claim.count({ where: baseWhere }),
       this.prisma.claim.findMany({
         where: { ...baseWhere, ...(keysetWhere ?? {}) },
-        include: { votes: { select: { vote: true } } },
+        include: {
+          votes: { where: { deletedAt: null }, select: { vote: true } },
+        },
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         take: limit,
       }),
@@ -160,10 +164,11 @@ export class ClaimsService {
     }
 
     const lastLedger = await this.getLastLedger();
-    const claim = await this.prisma.claim.findUnique({
-      where: { id },
+    const claim = await this.prisma.claim.findFirst({
+      where: { id, deletedAt: null },
       include: {
         votes: {
+          where: { deletedAt: null },
           select: { vote: true },
         },
       },
@@ -295,6 +300,7 @@ export class ClaimsService {
       where: {
         claimId: claim.metadata.id,
         voterAddress: walletAddress.toLowerCase(),
+        deletedAt: null,
       },
     });
 
@@ -352,7 +358,7 @@ export class ClaimsService {
     if (numericIds.length === 0) return [];
 
     const claims = await this.prisma.claim.findMany({
-      where: { id: { in: numericIds } },
+      where: { id: { in: numericIds }, deletedAt: null },
       select: { id: true, status: true, updatedAt: true },
     });
 

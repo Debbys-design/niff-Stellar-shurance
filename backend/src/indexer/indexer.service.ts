@@ -349,7 +349,7 @@ export class IndexerService {
         policyId: policyDbId,
         creatorAddress: getStringValue(data.claimant),
         amount: getStringValue(data.amount),
-        asset: getStringValue(data.asset),
+        asset: data.asset != null && data.asset !== '' ? getStringValue(data.asset) : null,
         description: getStringValue(data.details),
         imageUrls: getStringArray(data.image_urls),
         status: 'PENDING',
@@ -358,6 +358,7 @@ export class IndexerService {
         createdAtLedger: event.ledger,
         updatedAtLedger: event.ledger,
         txHash: event.txHash,
+        eventIndex: 0,
       },
       update: {
         amount: getStringValue(data.amount),
@@ -409,8 +410,8 @@ export class IndexerService {
 
   private async handleClaimProcessed(tx: IndexerTx, data: EventPayload, event: SorobanEvent) {
     const claimId = getNumberValue(data.claim_id);
-    await tx.claim.update({
-      where: { id: claimId },
+    await tx.claim.updateMany({
+      where: { id: claimId, deletedAt: null },
       data: {
         status: 'PAID',
         paidAt: new Date(event.ledgerClosedAt),
