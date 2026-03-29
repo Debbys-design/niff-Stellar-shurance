@@ -315,7 +315,7 @@ export class ClaimsService {
     policyId: number;
     amount: bigint;
     details: string;
-    imageUrls: string[];
+    evidence: { url: string; contentSha256Hex: string }[];
   }) {
     return this.soroban.buildFileClaimTransaction(args);
   }

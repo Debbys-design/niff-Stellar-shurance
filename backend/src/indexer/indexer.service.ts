@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { SorobanService } from '../rpc/soroban.service';
+import { parseEvent } from '../events/events.schema';
 import { rpc as SorobanRpc, scValToNative } from '@stellar/stellar-sdk';
 
 type IndexerTx = Prisma.TransactionClient;
@@ -327,6 +328,10 @@ export class IndexerService {
     });
   }
 
+  /**
+   * On-chain `ClaimFiled` carries claim_id + holder in topics and `evidence_hashes` in the value.
+   * Full claim rows need policy_id / amount / URLs from `get_claim` — backfill TBD.
+   */
   private async handleClaimFiled(tx: IndexerTx, data: EventPayload, event: SorobanEvent) {
     const claimId = getNumberValue(data.claim_id);
     const policyDbId = `${getStringValue(data.claimant)}:${getNumberValue(data.policy_id)}`;
