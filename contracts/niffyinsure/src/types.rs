@@ -110,6 +110,7 @@ pub enum CoverageTier {
 /// Base-flow transitions:
 ///   Processing  → Approved      (participation quorum met + more approve than reject votes cast)
 ///   Processing  → Rejected      (participation quorum met + reject wins or tie; or deadline with no quorum)
+///   Processing  → Withdrawn     (claimant calls `withdraw_claim` before any vote is cast)
 ///   Approved    → Paid          (admin calls process_claim)
 ///
 /// Appeal-flow transitions (requires Rejected status + open appeal window):
@@ -119,7 +120,7 @@ pub enum CoverageTier {
 ///   AppealApproved → Paid       (admin calls process_claim — same as Approved)
 ///
 /// Terminal states (no further transitions): Paid, Rejected (after appeal window
-/// closes), AppealApproved (→ Paid only), AppealRejected.
+/// closes), AppealApproved (→ Paid only), AppealRejected, Withdrawn.
 #[contracttype]
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum ClaimStatus {
@@ -134,6 +135,8 @@ pub enum ClaimStatus {
     AppealApproved,
     /// Appeal vote rejected; claim is permanently closed.
     AppealRejected,
+    /// Claimant withdrew before voting began; record kept for audit; no payout.
+    Withdrawn,
 }
 
 impl ClaimStatus {
@@ -145,6 +148,7 @@ impl ClaimStatus {
                 | ClaimStatus::Rejected
                 | ClaimStatus::AppealApproved
                 | ClaimStatus::AppealRejected
+                | ClaimStatus::Withdrawn
         )
     }
 }
