@@ -158,6 +158,12 @@
                     },
                     {
                       "key": {
+                        "symbol": "beneficiary"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
                         "symbol": "coverage"
                       },
                       "val": {
@@ -526,6 +532,30 @@
                               }
                             }
                           ]
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "RollingClaimCap"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "i128": "170141183460469231731687303715884105727"
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "RollingClaimWindowLedgers"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1000000
                         }
                       },
                       {

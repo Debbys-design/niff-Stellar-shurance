@@ -5,6 +5,8 @@ import { SorobanService } from '../rpc/soroban.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../cache/redis.service';
 import { SanitizationService } from './sanitization.service';
+import { TenantContextService } from '../tenant/tenant-context.service';
+import { claimTenantWhere, assertTenantOwnership } from '../tenant/tenant-filter.helper';
 import {
   ClaimDetailResponseDto,
   ClaimMetadataDto,
@@ -50,6 +52,7 @@ export class ClaimsService {
     private readonly sanitization: SanitizationService,
     private readonly config: ConfigService,
     private readonly soroban: SorobanService,
+    private readonly tenantCtx: TenantContextService,
   ) {
     this.cacheTtl = this.config.get<number>('CACHE_TTL_SECONDS', 60);
     this.ipfsGateway = this.config.get<string>('IPFS_GATEWAY', 'https://ipfs.io');
@@ -59,7 +62,8 @@ export class ClaimsService {
   async listClaims(params: ListClaimsParams): Promise<ClaimsListResponseDto> {
     const { after, status } = params;
     const limit = clampLimit(params.limit);
-    const cacheKey = `claims:list:${after ?? 'start'}:${limit}:${status ?? 'all'}`;
+    const tenantId = this.tenantCtx.tenantId;
+    const cacheKey = `claims:list:${tenantId ?? 'global'}:${after ?? 'start'}:${limit}:${status ?? 'all'}`;
     const cached = await this.redis.get<ClaimsListResponseDto>(cacheKey);
 
     if (cached) {
@@ -72,10 +76,10 @@ export class ClaimsService {
       ? { status: status.toUpperCase() as 'PENDING' | 'APPROVED' | 'PAID' | 'REJECTED' }
       : {};
     const keysetWhere = buildKeysetWhere(after);
-    const where: Prisma.ClaimWhereInput = {
+    const where: Prisma.ClaimWhereInput = claimTenantWhere(tenantId, {
       ...statusFilter,
       ...(keysetWhere ?? {}),
-    };
+    });
 
     const [claims, total] = await Promise.all([
       this.prisma.claim.findMany({
@@ -84,7 +88,7 @@ export class ClaimsService {
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         take: limit,
       }),
-      this.prisma.claim.count({ where: statusFilter }),
+      this.prisma.claim.count({ where: claimTenantWhere(tenantId, statusFilter) }),
     ]);
 
     const response: ClaimsListResponseDto = {
@@ -105,6 +109,7 @@ export class ClaimsService {
   ): Promise<ClaimsListResponseDto> {
     const { after } = params;
     const limit = clampLimit(params.limit);
+    const tenantId = this.tenantCtx.tenantId;
     const lastLedger = await this.getLastLedger();
 
     const votedClaimIds = await this.prisma.vote.findMany({
@@ -114,10 +119,10 @@ export class ClaimsService {
     const votedIds = votedClaimIds.map((v) => v.claimId);
     const keysetWhere = buildKeysetWhere(after);
 
-    const baseWhere: Prisma.ClaimWhereInput = {
+    const baseWhere: Prisma.ClaimWhereInput = claimTenantWhere(tenantId, {
       status: 'PENDING',
       ...(votedIds.length > 0 ? { id: { notIn: votedIds } } : {}),
-    };
+    });
 
     const [allOpen, page] = await Promise.all([
       this.prisma.claim.count({ where: baseWhere }),
@@ -143,7 +148,8 @@ export class ClaimsService {
   }
 
   async getClaimById(id: number, walletAddress?: string): Promise<ClaimDetailResponseDto> {
-    const cacheKey = `claims:detail:${id}`;
+    const tenantId = this.tenantCtx.tenantId;
+    const cacheKey = `claims:detail:${tenantId ?? 'global'}:${id}`;
     const cached = await this.redis.get<ClaimDetailResponseDto>(cacheKey);
 
     if (cached && !walletAddress) {
@@ -160,6 +166,9 @@ export class ClaimsService {
         },
       },
     });
+
+    // Enforce tenant ownership — returns 404 for cross-tenant reads
+    assertTenantOwnership(claim, tenantId, `Claim ${id}`);
 
     if (!claim) {
       throw new NotFoundException(`Claim with ID ${id} not found`);
@@ -322,4 +331,74 @@ export class ClaimsService {
     
     return result;
   }
+
+  // ── Claim status polling & SSE ───────────────────────────────────────────
+
+  /**
+   * Returns the current status for a set of claim IDs.
+   * Used by the frontend polling loop (GET /api/claims/status).
+   */
+  async getClaimStatuses(
+    claimIds: string[],
+  ): Promise<{ claimId: string; status: string; updatedAt: string }[]> {
+    const numericIds = claimIds.map(Number).filter((n) => !isNaN(n));
+    if (numericIds.length === 0) return [];
+
+    const claims = await this.prisma.claim.findMany({
+      where: { id: { in: numericIds } },
+      select: { id: true, status: true, updatedAt: true },
+    });
+
+    return claims.map((c) => ({
+      claimId: String(c.id),
+      status: c.status.toLowerCase(),
+      updatedAt: c.updatedAt.toISOString(),
+    }));
+  }
+
+  /**
+   * Subscribes a SSE client to status changes for the given claim IDs.
+   * Returns an unsubscribe function to call when the client disconnects.
+   *
+   * Implementation: lightweight in-process pub/sub via a Map of listeners.
+   * In a multi-instance deployment, replace with a Redis pub/sub channel.
+   */
+  subscribeToStatusChanges(
+    claimIds: string[],
+    send: (data: object) => void,
+  ): () => void {
+    const idSet = new Set(claimIds);
+
+    const listener = (update: { claimId: string; status: string; updatedAt: string }) => {
+      if (idSet.has(update.claimId)) {
+        send(update);
+      }
+    };
+
+    ClaimsService.statusListeners.add(listener);
+    return () => ClaimsService.statusListeners.delete(listener);
+  }
+
+  /**
+   * Publishes a status-change event to all active SSE subscribers.
+   * Call this from the indexer or queue consumer whenever a claim status changes.
+   */
+  static publishStatusChange(update: {
+    claimId: string;
+    status: string;
+    updatedAt: string;
+  }): void {
+    for (const listener of ClaimsService.statusListeners) {
+      try {
+        listener(update);
+      } catch {
+        // Ignore errors from individual listeners (e.g. closed connections).
+      }
+    }
+  }
+
+  // In-process listener registry. Replace with Redis pub/sub for multi-instance.
+  private static readonly statusListeners = new Set<
+    (update: { claimId: string; status: string; updatedAt: string }) => void
+  >();
 }

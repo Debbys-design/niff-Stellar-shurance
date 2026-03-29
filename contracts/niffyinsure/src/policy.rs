@@ -1,10 +1,9 @@
 use crate::{
     ledger, premium, storage, token,
-    types::{AgeBand, CoverageType, Policy, PolicyType, PremiumQuote, RegionTier, RiskInput},
+    types::{AgeBand, CoverageTier, Policy, PolicyType, PremiumQuote, RegionTier, RiskInput},
     validate::{self, Error},
 };
 use soroban_sdk::{contracterror, contractevent, contracttype, Address, Env, String};
-
 pub use ledger::QUOTE_TTL_LEDGERS;
 
 /// Current event schema version.
@@ -66,6 +65,18 @@ pub struct PolicyInitiated {
     pub end_ledger: u32,
 }
 
+/// Emitted when the payout beneficiary is set or changed (including at policy initiation when non-empty).
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BeneficiaryUpdated {
+    #[topic]
+    pub holder: Address,
+    #[topic]
+    pub policy_id: u32,
+    pub old_beneficiary: Option<Address>,
+    pub new_beneficiary: Option<Address>,
+}
+
 /// Event emitted by `renew_policy`.
 #[contractevent]
 #[derive(Clone, Debug)]
@@ -83,7 +94,7 @@ pub fn generate_premium(
     env: &Env,
     region: RegionTier,
     age_band: AgeBand,
-    coverage_type: CoverageType,
+    coverage_type: CoverageTier,
     safety_score: u32,
     base_amount: i128,
     include_breakdown: bool,
@@ -185,6 +196,10 @@ pub fn map_quote_error(env: &Env, err: Error) -> QuoteFailure {
         Error::ClaimNotRejected => "claim is not in rejected status; cannot open appeal",
         Error::AppealNotOpen => "no appeal is currently open",
         Error::AppealWindowStillOpen => "appeal voting window is still open; cannot finalize yet",
+        Error::VotingDurationOutOfBounds => {
+            "voting duration ledgers outside allowed min/max; see contract docs"
+        }
+        Error::PolicyBatchTooLarge => "batch exceeds maximum allowed keys per call",
     };
     QuoteFailure {
         code: err as u32,
@@ -205,10 +220,11 @@ pub fn initiate_policy(
     policy_type: PolicyType,
     region: RegionTier,
     age_band: AgeBand,
-    coverage_type: CoverageType,
+    coverage_type: CoverageTier,
     safety_score: u32,
     base_amount: i128,
     asset: Address,
+    beneficiary: Option<Address>,
 ) -> Result<Policy, PolicyError> {
     // Check granular pause: policy binding should be blocked if bind_paused
     storage::assert_bind_not_paused(env);
@@ -276,6 +292,7 @@ pub fn initiate_policy(
         start_ledger: current_ledger,
         end_ledger,
         asset: asset.clone(),
+        beneficiary: beneficiary.clone(),
         terminated_at_ledger: 0,
         termination_reason: crate::types::TerminationReason::None,
         terminated_by_admin: false,
@@ -298,6 +315,193 @@ pub fn initiate_policy(
         coverage: base_amount,
         start_ledger: current_ledger,
         end_ledger,
+    }
+    .publish(env);
+
+    if let Some(ref b) = beneficiary {
+        BeneficiaryUpdated {
+            holder: holder.clone(),
+            policy_id,
+            old_beneficiary: None,
+            new_beneficiary: Some(b.clone()),
+        }
+        .publish(env);
+    }
+
+    Ok(policy)
+}
+
+/// Update the optional payout beneficiary. Only the policy holder may call (authenticated via `holder`).
+///
+/// Admin cannot change this without the holder signing the transaction.
+pub fn set_beneficiary(
+    env: &Env,
+    holder: Address,
+    policy_id: u32,
+    new_beneficiary: Option<Address>,
+) -> Result<(), PolicyError> {
+    holder.require_auth();
+
+    let mut policy = storage::get_policy(env, &holder, policy_id).ok_or(PolicyError::NotFound)?;
+
+    if policy.holder != holder {
+        return Err(PolicyError::Unauthorized);
+    }
+
+    let old_beneficiary = policy.beneficiary.clone();
+    if old_beneficiary == new_beneficiary {
+        return Ok(());
+    }
+
+    policy.beneficiary = new_beneficiary.clone();
+    validate::check_policy(&policy).map_err(|_| PolicyError::PolicyValidation)?;
+    storage::set_policy(env, &holder, policy_id, &policy);
+
+    BeneficiaryUpdated {
+        holder: holder.clone(),
+        policy_id,
+        old_beneficiary,
+        new_beneficiary,
+    }
+    .publish(env);
+
+    Ok(())
+}
+
+// ── Grace period admin setter ─────────────────────────────────────────────────
+
+#[contractevent(topics = ["niffyinsure", "grace_period_updated"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GracePeriodUpdated {
+    pub old_ledgers: u32,
+    pub new_ledgers: u32,
+}
+
+pub fn set_grace_period_ledgers(env: &Env, ledgers: u32) -> Result<(), RenewalError> {
+    crate::admin::require_admin(env);
+    if !ledger::is_valid_grace_period_ledgers(ledgers) {
+        return Err(RenewalError::GracePeriodOutOfBounds);
+    }
+    let old = storage::get_grace_period_ledgers(env);
+    storage::set_grace_period_ledgers(env, ledgers);
+    GracePeriodUpdated {
+        old_ledgers: old,
+        new_ledgers: ledgers,
+    }
+    .publish(env);
+    Ok(())
+}
+
+pub fn get_grace_period_ledgers(env: &Env) -> u32 {
+    storage::get_grace_period_ledgers(env)
+}
+
+// ── renew_policy ──────────────────────────────────────────────────────────────
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum RenewalError {
+    /// Policy not found.
+    NotFound = 200,
+    /// Policy is not active.
+    Inactive = 201,
+    /// Current ledger is outside the renewal + grace window.
+    WindowClosed = 202,
+    /// An open claim is blocking renewal.
+    OpenClaimBlocking = 203,
+    /// Premium computation failed.
+    PremiumError = 204,
+    /// Ledger arithmetic overflow.
+    LedgerOverflow = 205,
+    /// Grace period value outside allowed [min, max] range.
+    GracePeriodOutOfBounds = 206,
+}
+
+/// Renew an existing active policy.
+///
+/// Eligible window: `[end - RENEWAL_WINDOW_LEDGERS, end + grace_period_ledgers)`.
+/// Renewal within the grace period succeeds with no coverage gap — the new
+/// term starts at `old_end_ledger + 1`.
+/// Blocked when an open claim exists on the policy (mirrors the open-claim rule).
+pub fn renew_policy(
+    env: &Env,
+    holder: Address,
+    policy_id: u32,
+    age_band: crate::types::AgeBand,
+    coverage_type: CoverageTier,
+    safety_score: u32,
+    base_amount: i128,
+) -> Result<Policy, RenewalError> {
+    storage::assert_bind_not_paused(env);
+    holder.require_auth();
+
+    let mut policy = storage::get_policy(env, &holder, policy_id)
+        .ok_or(RenewalError::NotFound)?;
+
+    if !policy.is_active {
+        return Err(RenewalError::Inactive);
+    }
+
+    // Open-claim guard (mirrors the rule enforced in the backend).
+    if storage::has_open_claim(env, &holder, policy_id) {
+        return Err(RenewalError::OpenClaimBlocking);
+    }
+
+    let now = env.ledger().sequence();
+    let grace = storage::get_grace_period_ledgers(env);
+
+    if !ledger::is_in_renewal_window_with_grace(
+        now,
+        policy.end_ledger,
+        ledger::RENEWAL_WINDOW_LEDGERS,
+        grace,
+    ) {
+        return Err(RenewalError::WindowClosed);
+    }
+
+    // Recalculate premium with the same deterministic formula.
+    let input = RiskInput {
+        region: policy.region.clone(),
+        age_band,
+        coverage: coverage_type,
+        safety_score,
+    };
+    let quote = crate::calculator::compute_quote(
+        env,
+        &input,
+        base_amount,
+        false,
+        ledger::QUOTE_TTL_LEDGERS,
+    )
+    .map_err(|_| RenewalError::PremiumError)?;
+
+    let premium_amount = quote.total_premium;
+    if premium_amount <= 0 {
+        return Err(RenewalError::PremiumError);
+    }
+
+    // Collect premium before any state mutation.
+    token::collect_premium(env, &holder, &policy.asset, premium_amount);
+
+    // New term starts immediately after old end — no gap, no overlap.
+    let new_start = policy.end_ledger.saturating_add(1);
+    let new_end = new_start
+        .checked_add(ledger::POLICY_DURATION_LEDGERS)
+        .ok_or(RenewalError::LedgerOverflow)?;
+
+    policy.start_ledger = new_start;
+    policy.end_ledger = new_end;
+    policy.premium = premium_amount;
+
+    storage::set_policy(env, &holder, policy_id, &policy);
+
+    PolicyRenewed {
+        version: POLICY_EVENT_VERSION,
+        policy_id,
+        holder: holder.clone(),
+        premium: premium_amount,
+        new_end_ledger: new_end,
     }
     .publish(env);
 
