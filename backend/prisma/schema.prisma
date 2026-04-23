@@ -1,0 +1,65 @@
+// This is your Prisma schema file.
+// Learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Policy {
+  id            String    @id @default(cuid())
+  holderAddress String
+  policyType    String
+  premium       Decimal
+  isActive      Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  /// Soft-delete timestamp. NULL = active. Set by DELETE /admin/policies/:id.
+  deletedAt     DateTime?
+
+  claims        Claim[]
+  votes         Vote[]
+
+  @@index([holderAddress])
+  @@index([deletedAt])
+}
+
+model Claim {
+  id               String    @id @default(cuid())
+  policyId         String
+  claimantAddress  String
+  claimAmount      Decimal
+  claimDetails     String
+  status           String    @default("Processing")
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  /// Soft-delete timestamp. NULL = active.
+  deletedAt        DateTime?
+
+  policy           Policy    @relation(fields: [policyId], references: [id])
+  votes            Vote[]
+
+  @@index([claimantAddress])
+  @@index([deletedAt])
+}
+
+model Vote {
+  id           String    @id @default(cuid())
+  claimId      String
+  policyId     String
+  voterAddress String
+  option       String
+  createdAt    DateTime  @default(now())
+  /// Soft-delete timestamp. NULL = active.
+  deletedAt    DateTime?
+
+  claim        Claim     @relation(fields: [claimId], references: [id])
+  policy       Policy    @relation(fields: [policyId], references: [id])
+
+  @@unique([claimId, voterAddress])
+  @@index([deletedAt])
+}
