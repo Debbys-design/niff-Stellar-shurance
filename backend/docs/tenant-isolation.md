@@ -138,6 +138,14 @@ A automated CI check (`npm run ci:tenant-check`) scans all TypeScript source fil
 and fails if any Prisma query on `claim` or `policy` does not use the tenant-filter
 helpers. This prevents new queries from accidentally bypassing tenant isolation.
 
+The check is implemented in `scripts/check-tenant-queries.ts` and uses the
+`queryBypassesTenantFilter()` lint utility from `tenant-filter.helper.ts`.
+
+```bash
+# Run locally
+npm run ci:tenant-check
+```
+
 ```yaml
 # Example GitHub Actions step
 - name: Tenant isolation check
